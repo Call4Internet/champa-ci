@@ -3,6 +3,10 @@ package amp
 import (
 	"crypto/sha256"
 	"encoding/base32"
+	"fmt"
+	"net"
+	"net/url"
+	"path"
 	"strings"
 
 	"golang.org/x/net/idna"
@@ -83,4 +87,93 @@ func domainPrefix(domain string) string {
 	// 2. Run the Fallback Algorithm. [Append the Cache domain suffix and]
 	//    return.
 	return domainPrefixFallback(domain)
+}
+
+// CacheURL computes the AMP cache URL for the publisher URL pubURL, using the
+// AMP cache at cacheURL. contentType is a string such as "c" or "i" that
+// indicates what type of serving the AMP cache is to perform. The Scheme of
+// pubURL must be "http" or "https". The Port of pubURL, if any, must match the
+// default for the scheme. cacheURL may not have RawQuery, Fragment, or
+// RawFragment set, because the resulting URL's query and fragment are taken
+// from the publisher URL.
+//
+// https://amp.dev/documentation/guides-and-tutorials/learn/amp-caches-and-cors/amp-cache-urls/
+func CacheURL(pubURL, cacheURL *url.URL, contentType string) (*url.URL, error) {
+	// The cache URL subdomain, including the domain prefix corresponding to
+	// the publisher URL's domain.
+	resultHost := domainPrefix(pubURL.Hostname()) + "." + cacheURL.Hostname()
+	if cacheURL.Port() != "" {
+		resultHost = net.JoinHostPort(resultHost, cacheURL.Port())
+	}
+
+	// https://amp.dev/documentation/guides-and-tutorials/learn/amp-caches-and-cors/amp-cache-urls/#url-path
+	// The first part of the path is the cache URL's own path, if any.
+	pathComponents := []string{cacheURL.EscapedPath()}
+	// The next path component is the content type. We cannot encode an
+	// empty content type, because it would result in consecutive path
+	// separators, which would semantically combine into a single separator.
+	if contentType == "" {
+		return nil, fmt.Errorf("invalid content type %+q", contentType)
+	}
+	pathComponents = append(pathComponents, url.PathEscape(contentType))
+	// Then, we add an "s" path component, if the publisher URL scheme is
+	// "https".
+	switch pubURL.Scheme {
+	case "http":
+		// Do nothing.
+	case "https":
+		pathComponents = append(pathComponents, "s")
+	default:
+		return nil, fmt.Errorf("invalid scheme %+q in publisher URL", pubURL.Scheme)
+	}
+	// The next path component is the publisher URL's host. The AMP cache
+	// URL format specification is not clear about whether other
+	// subcomponents of the authority (namely userinfo and port) may appear
+	// here. We adopt a policy of forbidding userinfo, and requiring that
+	// the port be the default for the scheme (and then we omit the port
+	// entirely from the returned URL).
+	if pubURL.User != nil {
+		return nil, fmt.Errorf("publisher URL may not contain userinfo")
+	}
+	if port := pubURL.Port(); port != "" {
+		if !((pubURL.Scheme == "http" && port == "80") || (pubURL.Scheme == "https" && port == "443")) {
+			return nil, fmt.Errorf("publisher URL port %+q is not the default for scheme %+q", port, pubURL.Scheme)
+		}
+	}
+	// As with the content type, we cannot encode an empty host, because
+	// that would result in an empty path component.
+	if pubURL.Hostname() == "" {
+		return nil, fmt.Errorf("invalid host %+q in publisher URL", pubURL.Hostname())
+	}
+	pathComponents = append(pathComponents, url.PathEscape(pubURL.Hostname()))
+	// Finally, we append the remainder of the original escaped path from
+	// the publisher URL.
+	pathComponents = append(pathComponents, pubURL.EscapedPath())
+
+	resultRawPath := path.Join(pathComponents...)
+	resultPath, err := url.PathUnescape(resultRawPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// The query and fragment of the returned URL always come from pubURL.
+	// Any query or fragment of cacheURL would be ignored. Return an error
+	// if either is set.
+	if cacheURL.RawQuery != "" {
+		return nil, fmt.Errorf("cache URL may not contain a query")
+	}
+	if cacheURL.Fragment != "" || cacheURL.RawFragment != "" {
+		return nil, fmt.Errorf("cache URL may not contain a fragment")
+	}
+
+	return &url.URL{
+		Scheme:      cacheURL.Scheme,
+		User:        cacheURL.User,
+		Host:        resultHost,
+		Path:        resultPath,
+		RawPath:     resultRawPath,
+		RawQuery:    pubURL.RawQuery,
+		Fragment:    pubURL.Fragment,
+		RawFragment: pubURL.RawFragment,
+	}, nil
 }

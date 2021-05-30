@@ -2,6 +2,7 @@ package amp
 
 import (
 	"bytes"
+	"net/url"
 	"testing"
 
 	"golang.org/x/net/idna"
@@ -125,6 +126,195 @@ func TestDomainPrefix(t *testing.T) {
 		_, err := profile.ToUnicode(output)
 		if err != nil {
 			t.Errorf("%+q → error %v", domain, err)
+		}
+	}
+}
+
+func mustParseURL(rawurl string) *url.URL {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		panic(err)
+	}
+	return u
+}
+
+func TestCacheURL(t *testing.T) {
+	// Tests expecting no error.
+	for _, test := range []struct {
+		pub         string
+		cache       string
+		contentType string
+		expected    string
+	}{
+		// With or without trailing slash on pubURL.
+		{
+			"http://example.com/",
+			"https://amp.cache/",
+			"c",
+			"https://example-com.amp.cache/c/example.com",
+		},
+		{
+			"http://example.com",
+			"https://amp.cache/",
+			"c",
+			"https://example-com.amp.cache/c/example.com",
+		},
+		// https pubURL.
+		{
+			"https://example.com/",
+			"https://amp.cache/",
+			"c",
+			"https://example-com.amp.cache/c/s/example.com",
+		},
+		// The content type should be escaped if necessary.
+		{
+			"http://example.com/",
+			"https://amp.cache/",
+			"/",
+			"https://example-com.amp.cache/%2F/example.com",
+		},
+		// Retain pubURL path, query, and fragment, including escaping.
+		{
+			"http://example.com/my%2Fpath/index.html?a=1#fragment",
+			"https://amp.cache/",
+			"c",
+			"https://example-com.amp.cache/c/example.com/my%2Fpath/index.html?a=1#fragment",
+		},
+		// Retain scheme, userinfo, port, and path of cacheURL, escaping
+		// whatever is necessary.
+		{
+			"http://example.com",
+			"http://cache%2Fuser:cache%40pass@amp.cache:123/with/../../path/..%2f../",
+			"c",
+			"http://cache%2Fuser:cache%40pass@example-com.amp.cache:123/path/..%2f../c/example.com",
+		},
+		// Port numbers in pubURL are allowed, if they're the default
+		// for scheme.
+		{
+			"http://example.com:80/",
+			"https://amp.cache/",
+			"c",
+			"https://example-com.amp.cache/c/example.com",
+		},
+		{
+			"https://example.com:443/",
+			"https://amp.cache/",
+			"c",
+			"https://example-com.amp.cache/c/s/example.com",
+		},
+		// "?" at the end of cacheURL is okay, as long as the query is
+		// empty.
+		{
+			"http://example.com/",
+			"https://amp.cache/?",
+			"c",
+			"https://example-com.amp.cache/c/example.com",
+		},
+
+		// https://developers.google.com/amp/cache/overview#example-requesting-document-using-tls
+		{
+			"https://example.com/amp_document.html",
+			"https://cdn.ampproject.org/",
+			"c",
+			"https://example-com.cdn.ampproject.org/c/s/example.com/amp_document.html",
+		},
+		// https://developers.google.com/amp/cache/overview#example-requesting-image-using-plain-http
+		{
+			"http://example.com/logo.png",
+			"https://cdn.ampproject.org/",
+			"i",
+			"https://example-com.cdn.ampproject.org/i/example.com/logo.png",
+		},
+		// https://developers.google.com/amp/cache/overview#query-parameter-example
+		{
+			"https://example.com/g?value=Hello%20World",
+			"https://cdn.ampproject.org/",
+			"c",
+			"https://example-com.cdn.ampproject.org/c/s/example.com/g?value=Hello%20World",
+		},
+	} {
+		pubURL := mustParseURL(test.pub)
+		cacheURL := mustParseURL(test.cache)
+		outputURL, err := CacheURL(pubURL, cacheURL, test.contentType)
+		if err != nil {
+			t.Errorf("%+q %+q %+q → error %v",
+				test.pub, test.cache, test.contentType, err)
+			continue
+		}
+		if outputURL.String() != test.expected {
+			t.Errorf("%+q %+q %+q → %+q, expected %+q",
+				test.pub, test.cache, test.contentType, outputURL, test.expected)
+			continue
+		}
+	}
+
+	// Tests expecting an error.
+	for _, test := range []struct {
+		pub         string
+		cache       string
+		contentType string
+	}{
+		// Empty content type.
+		{
+			"http://example.com/",
+			"https://amp.cache/",
+			"",
+		},
+		// Empty host.
+		{
+			"http:///index.html",
+			"https://amp.cache/",
+			"c",
+		},
+		// Empty scheme.
+		{
+			"//example.com/",
+			"https://amp.cache/",
+			"c",
+		},
+		// Unrecognized scheme.
+		{
+			"ftp://example.com/",
+			"https://amp.cache/",
+			"c",
+		},
+		// Wrong port number for scheme.
+		{
+			"http://example.com:443/",
+			"https://amp.cache/",
+			"c",
+		},
+		// userinfo in pubURL.
+		{
+			"http://user@example.com/",
+			"https://amp.cache/",
+			"c",
+		},
+		{
+			"http://user:pass@example.com/",
+			"https://amp.cache/",
+			"c",
+		},
+		// cacheURL may not contain a query.
+		{
+			"http://example.com/",
+			"https://amp.cache/?a=1",
+			"c",
+		},
+		// cacheURL may not contain a fragment.
+		{
+			"http://example.com/",
+			"https://amp.cache/#fragment",
+			"c",
+		},
+	} {
+		pubURL := mustParseURL(test.pub)
+		cacheURL := mustParseURL(test.cache)
+		outputURL, err := CacheURL(pubURL, cacheURL, test.contentType)
+		if err == nil {
+			t.Errorf("%+q %+q %+q → %+q, expected error",
+				test.pub, test.cache, test.contentType, outputURL)
+			continue
 		}
 	}
 }
