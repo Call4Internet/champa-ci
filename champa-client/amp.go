@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
 	"path"
 
 	"www.bamsoftware.com/git/champa.git/amp"
+	"www.bamsoftware.com/git/champa.git/armor"
 )
 
 // cacheBreaker returns a random byte slice of fixed length.
@@ -71,5 +73,7 @@ func exchangeAMP(serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadC
 		return nil, fmt.Errorf("server returned a redirect (Location: %+q)", loc)
 	}
 
-	return resp.Body, nil
+	dec := armor.NewDecoder(resp.Body)
+
+	return ioutil.NopCloser /*TODO*/ (dec), nil
 }

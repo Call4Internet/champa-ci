@@ -16,6 +16,7 @@ import (
 
 	"github.com/xtaci/kcp-go/v5"
 	"github.com/xtaci/smux"
+	"www.bamsoftware.com/git/champa.git/armor"
 	"www.bamsoftware.com/git/champa.git/turbotunnel"
 )
 
@@ -177,16 +178,28 @@ func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 	handler.pconn.QueueIncoming(payload, clientID)
 
-	rw.Header().Set("Content-Type", "application/octet-stream")
+	rw.Header().Set("Content-Type", "text/html")
+	// Attempt to hint to an AMP cache not to waste resources caching this
+	// document. "The Google AMP Cache considers any document fresh for at
+	// least 15 seconds."
+	// https://developers.google.com/amp/cache/overview#google-amp-cache-updates
+	rw.Header().Set("Cache-Control", "max-age=15")
 	rw.WriteHeader(http.StatusOK)
+
+	enc, err := armor.NewEncoder(rw)
+	if err != nil {
+		log.Printf("armor.NewEncoder: %v", err)
+		return
+	}
 
 	// TODO maxResponseDelay
 	outgoing := handler.pconn.OutgoingQueue(clientID)
 	select {
 	case p := <-outgoing:
-		rw.Write(p)
+		enc.Write(p)
 	default:
 	}
+	enc.Close()
 }
 
 func run(listen, upstream string) error {
