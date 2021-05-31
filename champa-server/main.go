@@ -1,0 +1,250 @@
+package main
+
+import (
+	"bytes"
+	"encoding/base64"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"path"
+	"sync"
+	"time"
+
+	"github.com/xtaci/kcp-go/v5"
+	"github.com/xtaci/smux"
+	"www.bamsoftware.com/git/champa.git/turbotunnel"
+)
+
+const (
+	// smux streams will be closed after this much time without receiving data.
+	idleTimeout = 10 * time.Minute
+
+	// How long we may wait for downstream data before sending an empty
+	// response. If another query comes in while we are waiting, we'll send
+	// an empty response anyway and restart the delay timer for the next
+	// response.
+	maxResponseDelay = 1 * time.Second
+
+	// How long to wait for a TCP connection to upstream to be established.
+	upstreamDialTimeout = 30 * time.Second
+)
+
+// handleStream bidirectionally connects a client stream with a TCP socket
+// addressed by upstream.
+func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
+	dialer := net.Dialer{
+		Timeout: upstreamDialTimeout,
+	}
+	upstreamConn, err := dialer.Dial("tcp", upstream)
+	if err != nil {
+		return fmt.Errorf("stream %08x:%d connect upstream: %v", conv, stream.ID(), err)
+	}
+	defer upstreamConn.Close()
+	upstreamTCPConn := upstreamConn.(*net.TCPConn)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, err := io.Copy(stream, upstreamTCPConn)
+		if err == io.EOF {
+			// smux Stream.Write may return io.EOF.
+			err = nil
+		}
+		if err != nil {
+			log.Printf("stream %08x:%d copy stream←upstream: %v", conv, stream.ID(), err)
+		}
+		upstreamTCPConn.CloseRead()
+		stream.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		_, err := io.Copy(upstreamTCPConn, stream)
+		if err == io.EOF {
+			// smux Stream.WriteTo may return io.EOF.
+			err = nil
+		}
+		if err != nil && err != io.ErrClosedPipe {
+			log.Printf("stream %08x:%d copy upstream←stream: %v", conv, stream.ID(), err)
+		}
+		upstreamTCPConn.CloseWrite()
+	}()
+	wg.Wait()
+
+	return nil
+}
+
+// acceptStreams wraps a KCP session in a Noise channel and an smux.Session,
+// then awaits smux streams. It passes each stream to handleStream.
+func acceptStreams(conn *kcp.UDPSession, upstream string) error {
+	smuxConfig := smux.DefaultConfig()
+	smuxConfig.Version = 2
+	smuxConfig.KeepAliveTimeout = idleTimeout
+	sess, err := smux.Server(conn, smuxConfig)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	for {
+		stream, err := sess.AcceptStream()
+		if err != nil {
+			if err, ok := err.(net.Error); ok && err.Temporary() {
+				continue
+			}
+			if err == io.ErrClosedPipe {
+				// We don't want to report this error.
+				err = nil
+			}
+			return err
+		}
+		log.Printf("begin stream %08x:%d", conn.GetConv(), stream.ID())
+		go func() {
+			defer func() {
+				log.Printf("end stream %08x:%d", conn.GetConv(), stream.ID())
+				stream.Close()
+			}()
+			err := handleStream(stream, upstream, conn.GetConv())
+			if err != nil {
+				log.Printf("stream %08x:%d handleStream: %v", conn.GetConv(), stream.ID(), err)
+			}
+		}()
+	}
+}
+
+// acceptSessions listens for incoming KCP connections and passes them to
+// acceptStreams.
+func acceptSessions(ln *kcp.Listener, upstream string) error {
+	for {
+		conn, err := ln.AcceptKCP()
+		if err != nil {
+			if err, ok := err.(net.Error); ok && err.Temporary() {
+				continue
+			}
+			return err
+		}
+		log.Printf("begin session %08x", conn.GetConv())
+		// Permit coalescing the payloads of consecutive sends.
+		conn.SetStreamMode(true)
+		// Disable the dynamic congestion window (limit only by the
+		// maximum of local and remote static windows).
+		conn.SetNoDelay(
+			0, // default nodelay
+			0, // default interval
+			0, // default resend
+			1, // nc=1 => congestion window off
+		)
+		go func() {
+			defer func() {
+				log.Printf("end session %08x", conn.GetConv())
+				conn.Close()
+			}()
+			err := acceptStreams(conn, upstream)
+			if err != nil {
+				log.Printf("session %08x acceptStreams: %v", conn.GetConv(), err)
+			}
+		}()
+	}
+}
+
+type Handler struct {
+	pconn *turbotunnel.QueuePacketConn
+}
+
+func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != "GET" {
+		http.Error(rw, "Bad request method", http.StatusBadRequest)
+		return
+	}
+
+	_, encoded := path.Split(req.URL.Path)
+	payload, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		http.Error(rw, "Cannot decode request", http.StatusBadRequest)
+		return
+	}
+
+	var clientID turbotunnel.ClientID
+	n := copy(clientID[:], payload)
+	payload = payload[n:]
+	if n != len(clientID) {
+		http.Error(rw, "Cannot decode request", http.StatusBadRequest)
+		return
+	}
+	handler.pconn.QueueIncoming(payload, clientID)
+
+	rw.Header().Set("Content-Type", "application/octet-stream")
+	rw.WriteHeader(http.StatusOK)
+
+	// TODO maxResponseDelay
+	outgoing := handler.pconn.OutgoingQueue(clientID)
+	select {
+	case p := <-outgoing:
+		rw.Write(p)
+	default:
+	}
+}
+
+func run(listen, upstream string) error {
+	// Start up the virtual PacketConn for turbotunnel.
+	pconn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2)
+	ln, err := kcp.ServeConn(nil, 0, 0, pconn)
+	if err != nil {
+		return fmt.Errorf("opening KCP listener: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		err := acceptSessions(ln, upstream)
+		if err != nil {
+			log.Printf("acceptSessions: %v", err)
+		}
+	}()
+
+	handler := &Handler{
+		pconn: pconn,
+	}
+
+	server := &http.Server{
+		Addr:    listen,
+		Handler: handler,
+		// TODO ReadHandlerTimeout
+		// TODO WriteTimeout
+		// TODO IdleTimeout?
+	}
+	defer server.Close()
+
+	return server.ListenAndServe()
+}
+
+func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
+  %[1]s LISTENADDR UPSTREAMADDR
+
+Example:
+  %[1]s 127.0.0.1:8080 127.0.0.1:7001
+
+`, os.Args[0])
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+
+	log.SetFlags(log.LstdFlags | log.LUTC)
+
+	if flag.NArg() != 2 {
+		flag.Usage()
+		os.Exit(1)
+	}
+	listen := flag.Arg(0)
+	upstream := flag.Arg(1)
+	// TODO check upstream syntax
+
+	err := run(listen, upstream)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
