@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -75,7 +74,13 @@ func exchangeAMP(serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadC
 		return nil, fmt.Errorf("server returned a redirect (Location: %+q)", loc)
 	}
 
-	dec := armor.NewDecoder(resp.Body)
-
-	return ioutil.NopCloser /*TODO*/ (dec), nil
+	// The caller should read from the decoder (which reads from the
+	// response body), but close the actual response body when done.
+	return &struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: armor.NewDecoder(resp.Body),
+		Closer: resp.Body,
+	}, nil
 }
