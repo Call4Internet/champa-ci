@@ -22,7 +22,7 @@ import (
 
 const (
 	// smux streams will be closed after this much time without receiving data.
-	idleTimeout = 10 * time.Minute
+	idleTimeout = 2 * time.Minute
 
 	// How long we may wait for downstream data before sending an empty
 	// response. If another query comes in while we are waiting, we'll send

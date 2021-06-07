@@ -17,7 +17,7 @@ import (
 )
 
 // smux streams will be closed after this much time without receiving data.
-const idleTimeout = 10 * time.Minute
+const idleTimeout = 2 * time.Minute
 
 func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	stream, err := sess.OpenStream()
