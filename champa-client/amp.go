@@ -9,7 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path"
+	"strings"
 
 	"www.bamsoftware.com/git/champa.git/amp"
 	"www.bamsoftware.com/git/champa.git/armor"
@@ -28,10 +28,12 @@ func cacheBreaker() []byte {
 func exchangeAMP(serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadCloser, error) {
 	// Append a cache buster and the encoded p to the path of serverURL.
 	u := serverURL.ResolveReference(&url.URL{
-		Path: path.Join(
+		// Use strings.Join, rather than path.Join, to retain the
+		// closing slash when p is empty.
+		Path: strings.Join([]string{
 			base64.RawURLEncoding.EncodeToString(cacheBreaker()),
 			base64.RawURLEncoding.EncodeToString(p),
-		),
+		}, "/"),
 	})
 
 	// Proxy through an AMP cache, if requested.
