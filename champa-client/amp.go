@@ -27,10 +27,11 @@ func cacheBreaker() []byte {
 func exchangeAMP(serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadCloser, error) {
 	// Append a cache buster and the encoded p to the path of serverURL.
 	u := serverURL.ResolveReference(&url.URL{
-		// Use strings.Join, rather than path.Join, to retain the
+		// Use strings.Join, rather than path.Join, in order to retain a
 		// closing slash when p is empty.
 		Path: strings.Join([]string{
-			base64.RawURLEncoding.EncodeToString(cacheBreaker()),
+			// "0" is the client–server protocol version indicator.
+			"0" + base64.RawURLEncoding.EncodeToString(cacheBreaker()),
 			base64.RawURLEncoding.EncodeToString(p),
 		}, "/"),
 	})

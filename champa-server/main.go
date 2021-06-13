@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -156,26 +157,49 @@ type Handler struct {
 	pconn *turbotunnel.QueuePacketConn
 }
 
-func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+// decodeRequest extracts a ClientID and a payload from an incoming HTTP
+// request. In case of a decoding failure, the returned payload slice will be
+// nil. The payload is always non-nil after a successful decoding, even if the
+// payload is empty.
+func decodeRequest(req *http.Request) (turbotunnel.ClientID, []byte) {
 	if req.Method != "GET" {
-		http.Error(rw, "Bad request method", http.StatusBadRequest)
-		return
-	}
-
-	_, encoded := path.Split(req.URL.Path)
-	payload, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		http.Error(rw, "Cannot decode request", http.StatusBadRequest)
-		return
+		return turbotunnel.ClientID{}, nil
 	}
 
 	var clientID turbotunnel.ClientID
-	n := copy(clientID[:], payload)
-	payload = payload[n:]
-	if n != len(clientID) {
-		http.Error(rw, "Cannot decode request", http.StatusBadRequest)
+	var payload []byte
+
+	// Check the version indicator of the incoming client–server protocol.
+	switch {
+	case strings.HasPrefix(req.URL.Path, "/0"):
+		// Version "0"'s payload is base64-encoded, using the URL-safe
+		// alphabet without padding, in the final path component
+		// (earlier path components are ignored).
+		var err error
+		_, encoded := path.Split(req.URL.Path[2:]) // Remove version prefix.
+		payload, err = base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil {
+			return turbotunnel.ClientID{}, nil
+		}
+		n := copy(clientID[:], payload)
+		payload = payload[n:]
+		if n != len(clientID) {
+			return turbotunnel.ClientID{}, nil
+		}
+	default:
+		return turbotunnel.ClientID{}, nil
+	}
+
+	return clientID, payload
+}
+
+func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	clientID, payload := decodeRequest(req)
+	if payload == nil {
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
+
 	handler.pconn.QueueIncoming(payload, clientID)
 
 	rw.Header().Set("Content-Type", "text/html")
