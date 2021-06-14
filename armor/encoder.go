@@ -75,7 +75,7 @@ type armorEncoder struct {
 }
 
 func (enc *armorEncoder) Write(p []byte) (int, error) {
-	// Write into the chain base64| element | w.
+	// Write into the chain base64 | element | w.
 	return enc.base64.Write(p)
 }
 
