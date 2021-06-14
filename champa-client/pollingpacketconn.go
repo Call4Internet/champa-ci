@@ -22,6 +22,9 @@ const (
 	initPollDelay       = 500 * time.Millisecond
 	maxPollDelay        = 10 * time.Second
 	pollDelayMultiplier = 2.0
+
+	// The maximum number of pending polls we may have scheduled.
+	pollLimit = 20
 )
 
 // PollingPacketConn implements the net.PacketConn interface over an abstract
@@ -47,7 +50,7 @@ func NewPollingPacketConn(poll PollFunc) *PollingPacketConn {
 	clientID := turbotunnel.NewClientID()
 	c := &PollingPacketConn{
 		clientID:        clientID,
-		pollChan:        make(chan struct{}),
+		pollChan:        make(chan struct{}, pollLimit),
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),
 	}
 	go func() {
