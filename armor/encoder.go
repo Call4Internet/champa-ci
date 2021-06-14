@@ -60,6 +60,13 @@ func NewEncoder(w io.Writer) (io.WriteCloser, error) {
 	}
 
 	element := &elementEncoder{w: w}
+	// Write a server–client protocol version indicator, outside the base64
+	// layer.
+	_, err = element.Write([]byte("0"))
+	if err != nil {
+		return nil, err
+	}
+
 	base64 := base64.NewEncoder(base64.StdEncoding, element)
 	return &armorEncoder{
 		w:       w,

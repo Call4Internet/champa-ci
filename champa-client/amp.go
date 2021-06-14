@@ -75,13 +75,19 @@ func exchangeAMP(serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadC
 		return nil, fmt.Errorf("server returned a redirect (Location: %+q)", loc)
 	}
 
+	dec, err := armor.NewDecoder(resp.Body)
+	if err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+
 	// The caller should read from the decoder (which reads from the
 	// response body), but close the actual response body when done.
 	return &struct {
 		io.Reader
 		io.Closer
 	}{
-		Reader: armor.NewDecoder(resp.Body),
+		Reader: dec,
 		Closer: resp.Body,
 	}, nil
 }

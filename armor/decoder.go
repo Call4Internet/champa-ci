@@ -10,6 +10,14 @@ import (
 	"golang.org/x/net/html"
 )
 
+// ErrUnknownVersion is the error returned when the first character inside the
+// element encoding (but outside the base64 encoding) is not '0'.
+type ErrUnknownVersion byte
+
+func (err ErrUnknownVersion) Error() string {
+	return fmt.Sprintf("unknown armor version indicator %+q", byte(err))
+}
+
 func isASCIIWhitespace(b byte) bool {
 	switch b {
 	// https://infra.spec.whatwg.org/#ascii-whitespace
@@ -64,9 +72,8 @@ func decodeToWriter(w io.Writer, r io.Reader) (int64, error) {
 			return total, err
 		case html.TextToken:
 			if active {
-				// Re-join the separate chunks of base64 and
+				// Re-join the separate chunks of text and
 				// feed them to the decoder.
-				// https://infra.spec.whatwg.org/#forgiving-base64
 				scanner := bufio.NewScanner(bytes.NewReader(tokenizer.Text()))
 				scanner.Split(splitASCIIWhitespace)
 				for scanner.Scan() {
@@ -103,12 +110,27 @@ func decodeToWriter(w io.Writer, r io.Reader) (int64, error) {
 }
 
 // NewDecoder returns a new AMP armor decoder.
-func NewDecoder(r io.Reader) io.Reader {
+func NewDecoder(r io.Reader) (io.Reader, error) {
 	pr, pw := io.Pipe()
-	dec := base64.NewDecoder(base64.StdEncoding, pr)
 	go func() {
 		_, err := decodeToWriter(pw, r)
 		pw.CloseWithError(err)
 	}()
-	return dec
+
+	// The first byte inside the element encoding is a server–client
+	// protocol version indicator.
+	var version [1]byte
+	_, err := pr.Read(version[:])
+	if err != nil {
+		pr.CloseWithError(err)
+		return nil, err
+	}
+	switch version[0] {
+	case '0':
+		return base64.NewDecoder(base64.StdEncoding, pr), nil
+	default:
+		err := ErrUnknownVersion(version[0])
+		pr.CloseWithError(err)
+		return nil, err
+	}
 }

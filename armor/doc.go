@@ -10,11 +10,13 @@ The encoding is based on ones created by Ivan Markin. See codec/amp/ in
 https://github.com/nogoegst/amper and discussion at
 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/-/issues/25985.
 
-The encoding algorithm works as follows. Base64-encode the input. Split the
-base64 into fixed-size chunks separated by whitespace. Take up to 1024 chunks at
-a time, and wrap them in a pre element. Then, situate the markup so far within
-the body of the AMP HTML boilerplate. The decoding algorithm is to scan the HTML
-for pre elements, split their text contents on whitespace and concatenate, then
+The encoding algorithm works as follows. Base64-encode the input. Prepend the
+input with the byte '0'; this is a protocol version indicator that the decoder
+can use to determine how to interpret the bytes that follow. Split the base64
+into fixed-size chunks separated by whitespace. Take up to 1024 chunks at a
+time, and wrap them in a pre element. Then, situate the markup so far within the
+body of the AMP HTML boilerplate. The decoding algorithm is to scan the HTML for
+pre elements, split their text contents on whitespace and concatenate, then
 base64 decode. The base64 encoding uses the standard alphabet, with normal "="
 padding (https://tools.ietf.org/html/rfc4648#section-4).
 
@@ -30,8 +32,8 @@ nested.
 
 Example
 
-The following is the result of encoding the string "This was encoded with AMP
-armor.":
+The following is the result of encoding the string
+"This was encoded with AMP armor.":
 
 	<!doctype html>
 	<html amp>
@@ -44,8 +46,8 @@ armor.":
 	</head>
 	<body>
 	<pre>
-	VGhpcyB3YXMgZW5jb2RlZCB3aXRoIEFN
-	UCBhcm1vci4=
+	0VGhpcyB3YXMgZW5jb2RlZCB3aXRoIEF
+	NUCBhcm1vci4=
 	</pre>
 	</body>
 	</html>

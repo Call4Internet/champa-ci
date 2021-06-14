@@ -9,7 +9,11 @@ import (
 )
 
 func decodeToString(src string) (string, error) {
-	p, err := ioutil.ReadAll(NewDecoder(strings.NewReader(src)))
+	dec, err := NewDecoder(strings.NewReader(src))
+	if err != nil {
+		return "", err
+	}
+	p, err := ioutil.ReadAll(dec)
 	return string(p), err
 }
 
@@ -20,12 +24,38 @@ func TestDecoder(t *testing.T) {
 		expectedErr    bool
 	}{
 		{`
-aGVsbG8gd29ybGQK
+<pre>
+0
+</pre>
+`,
+			"",
+			false,
+		},
+		{`
+<pre>
+0aGVsbG8gd29ybGQK
+</pre>
+`,
+			"hello world\n",
+			false,
+		},
+		// bad version indicator
+		{`
+<pre>
+1aGVsbG8gd29ybGQK
+</pre>
+`,
+			"",
+			true,
+		},
+		// text outside <pre> elements
+		{`
+0aGVsbG8gd29ybGQK
 blah blah blah
 <pre>
-aGVsbG8gd29ybGQK
+0aGVsbG8gd29ybGQK
 </pre>
-aGVsbG8gd29ybGQK
+0aGVsbG8gd29ybGQK
 blah blah blah
 `,
 			"hello world\n",
@@ -33,16 +63,16 @@ blah blah blah
 		},
 		{`
 <pre>
-QUJDREVG
-R0hJSktM
-TU5PUFFS
+0QUJDREV
+GR0hJSkt
+MTU5PUFF
+SU1RVVld
 </pre>
 junk
 <pre>
-U1RVVldY
-WVowMTIz
-NDU2Nzg5
-Cg
+YWVowMTI
+zNDU2Nzg
+5Cg
 =
 </pre>
 <pre>
@@ -52,7 +82,7 @@ Cg
 			"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n",
 			false,
 		},
-		// no <pre> tags
+		// no <pre> elements, hence no version indicator
 		{`
 aGVsbG8gd29ybGQK
 blah blah blah
@@ -61,9 +91,9 @@ aGVsbG8gd29ybGQK
 blah blah blah
 `,
 			"",
-			false,
+			true,
 		},
-		// empty <pre> tags
+		// empty <pre> elements, hence no version indicator
 		{`
 aGVsbG8gd29ybGQK
 blah blah blah
@@ -73,11 +103,11 @@ aGVsbG8gd29ybGQK<pre></pre>
 blah blah blah
 `,
 			"",
-			false,
+			true,
 		},
-		// other tags inside <pre>
+		// other elements inside <pre>
 		{
-			"blah <pre>aGVsb<p>G8gd29</p>ybGQK</pre>",
+			"blah <pre>0aGVsb<p>G8gd29</p>ybGQK</pre>",
 			"hello world\n",
 			false,
 		},
@@ -85,11 +115,11 @@ blah blah blah
 		{
 			"blah <!-- <pre>aGVsbG8gd29ybGQK</pre> -->",
 			"",
-			false,
+			true,
 		},
 		// all kinds of ASCII whitespace
 		{
-			"blah <pre>\x09aG\x0aV\x0csb\x0dG8\x20gd29ybGQK</pre>",
+			"blah <pre>\x200\x09aG\x0aV\x0csb\x0dG8\x20gd29ybGQK</pre>",
 			"hello world\n",
 			false,
 		},
@@ -97,16 +127,16 @@ blah blah blah
 		// bad padding
 		{`
 <pre>
-QUJDREVG
-R0hJSktM
-TU5PUFFS
+0QUJDREV
+GR0hJSkt
+MTU5PUFF
+SU1RVVld
 </pre>
 junk
 <pre>
-U1RVVldY
-WVowMTIz
-NDU2Nzg5
-Cg
+YWVowMTI
+zNDU2Nzg
+5Cg
 =
 </pre>
 `,
@@ -125,13 +155,13 @@ Cg
 		*/
 		// missing </pre>
 		{
-			"blah <pre></pre><pre>aGVsbG8gd29ybGQK",
+			"blah <pre></pre><pre>0aGVsbG8gd29ybGQK",
 			"",
 			true,
 		},
 		// nested <pre>
 		{
-			"blah <pre>aGVsb<pre>G8gd29</pre>ybGQK</pre>",
+			"blah <pre>0aGVsb<pre>G8gd29</pre>ybGQK</pre>",
 			"",
 			true,
 		},
