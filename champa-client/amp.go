@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -75,7 +76,7 @@ func exchangeAMP(serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadC
 		return nil, fmt.Errorf("server returned a redirect (Location: %+q)", loc)
 	}
 
-	dec, err := armor.NewDecoder(resp.Body)
+	dec, err := armor.NewDecoder(bufio.NewReader(resp.Body))
 	if err != nil {
 		resp.Body.Close()
 		return nil, err
