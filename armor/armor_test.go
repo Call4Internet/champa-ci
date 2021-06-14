@@ -13,7 +13,7 @@ func decodeToString(src string) (string, error) {
 	return string(p), err
 }
 
-func testDecoder(t *testing.T) {
+func TestDecoder(t *testing.T) {
 	for _, test := range []struct {
 		input          string
 		expectedOutput string
