@@ -18,6 +18,7 @@ import (
 	"github.com/xtaci/kcp-go/v5"
 	"github.com/xtaci/smux"
 	"www.bamsoftware.com/git/champa.git/armor"
+	"www.bamsoftware.com/git/champa.git/encapsulation"
 	"www.bamsoftware.com/git/champa.git/turbotunnel"
 )
 
@@ -200,7 +201,15 @@ func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	handler.pconn.QueueIncoming(payload, clientID)
+	// Read incoming packets from the payload.
+	r := bytes.NewReader(payload)
+	for {
+		p, err := encapsulation.ReadData(r)
+		if err != nil {
+			break
+		}
+		handler.pconn.QueueIncoming(p, clientID)
+	}
 
 	rw.Header().Set("Content-Type", "text/html")
 	// Attempt to hint to an AMP cache not to waste resources caching this

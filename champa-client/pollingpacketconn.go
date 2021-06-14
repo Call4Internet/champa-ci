@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"io/ioutil"
 	"log"
 	"time"
 
+	"www.bamsoftware.com/git/champa.git/encapsulation"
 	"www.bamsoftware.com/git/champa.git/turbotunnel"
 )
 
@@ -58,33 +60,37 @@ func NewPollingPacketConn(poll PollFunc) *PollingPacketConn {
 }
 
 func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
+	// TODO: compute this dynamically, considering URL length and encoding
+	// overhead.
+	const maxPayloadLength = 5000
+
 	pollDelay := initPollDelay
 	pollTimer := time.NewTimer(pollDelay)
 	for {
+		var payload bytes.Buffer
+		payload.Write(c.clientID[:])
+
 		var p []byte
-		outgoingQueue := c.QueuePacketConn.OutgoingQueue(turbotunnel.DummyAddr{})
+		unstash := c.QueuePacketConn.Unstash(turbotunnel.DummyAddr{})
+		outgoing := c.QueuePacketConn.OutgoingQueue(turbotunnel.DummyAddr{})
 		pollTimerExpired := false
-		// Prioritize sending an actual data packet from OutgoingQueue.
-		// Only consider a poll when OutgoingQueue is empty.
+		// Block, waiting for one packet or a demand to poll. Prioritize
+		// taking a packet from the stash, then taking one from the
+		// outgoing queue, then finally also consider polls.
 		select {
-		case p = <-outgoingQueue:
+		case p = <-unstash:
 		default:
 			select {
-			case p = <-outgoingQueue:
-			case <-c.pollChan:
-				p = nil
-			case <-pollTimer.C:
-				p = nil
-				pollTimerExpired = true
-			}
-		}
-
-		if len(p) > 0 {
-			// A data-carrying packet displaces one pending poll
-			// opportunity, if any.
-			select {
-			case <-c.pollChan:
+			case p = <-unstash:
+			case p = <-outgoing:
 			default:
+				select {
+				case p = <-unstash:
+				case p = <-outgoing:
+				case <-c.pollChan:
+				case <-pollTimer.C:
+					pollTimerExpired = true
+				}
 			}
 		}
 
@@ -106,9 +112,34 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 		}
 		pollTimer.Reset(pollDelay)
 
-		// TODO batching
+		// Grab as many more packets as are immediately available and
+		// fit in maxPayloadLength.
+		for len(p) > 0 && payload.Len()+len(p) <= maxPayloadLength {
+			// Encapsulate the packet into the payload.
+			encapsulation.WriteData(&payload, p)
+
+			// A data-carrying packet displaces one pending poll
+			// opportunity, if any.
+			select {
+			case <-c.pollChan:
+			default:
+			}
+
+			select {
+			case p = <-outgoing:
+			default:
+				p = nil
+			}
+		}
+		if len(p) > 0 {
+			// We read an actual packet, but it didn't fit under the
+			// limit. Stash it so that it will be first in line for
+			// the next poll.
+			c.QueuePacketConn.Stash(p, turbotunnel.DummyAddr{})
+		}
+
 		go func() {
-			body, err := poll(append(c.clientID[:], p...))
+			body, err := poll(payload.Bytes())
 			if err != nil {
 				log.Printf("poll: %v", err)
 				return
