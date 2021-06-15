@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"log"
@@ -22,6 +23,10 @@ const (
 	initPollDelay       = 500 * time.Millisecond
 	maxPollDelay        = 10 * time.Second
 	pollDelayMultiplier = 2.0
+
+	// How long we wait for a start-to-finish request–response exchange,
+	// including reading the response body.
+	pollTimeout = 30 * time.Second
 
 	// The maximum number of pending polls we may have scheduled.
 	pollLimit = 20
@@ -44,7 +49,7 @@ type PollingPacketConn struct {
 	*turbotunnel.QueuePacketConn
 }
 
-type PollFunc func([]byte) (io.ReadCloser, error)
+type PollFunc func(context.Context, []byte) (io.ReadCloser, error)
 
 func NewPollingPacketConn(poll PollFunc) *PollingPacketConn {
 	clientID := turbotunnel.NewClientID()
@@ -142,7 +147,9 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 		}
 
 		go func() {
-			body, err := poll(payload.Bytes())
+			ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+			defer cancel()
+			body, err := poll(ctx, payload.Bytes())
 			if err != nil {
 				log.Printf("poll: %v", err)
 				return
@@ -182,7 +189,6 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 func (c *PollingPacketConn) processIncoming(body io.Reader) error {
 	// Safety limit on response body length.
 	lr := io.LimitReader(body, 500*1024)
-	// TODO timeout
 	polled := false
 	for {
 		p, err := encapsulation.ReadData(lr)

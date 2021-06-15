@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -25,7 +26,7 @@ func cacheBreaker() []byte {
 	return buf
 }
 
-func exchangeAMP(serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadCloser, error) {
+func exchangeAMP(ctx context.Context, serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadCloser, error) {
 	// Append a cache buster and the encoded p to the path of serverURL.
 	u := serverURL.ResolveReference(&url.URL{
 		// Use strings.Join, rather than path.Join, in order to retain a
@@ -46,7 +47,7 @@ func exchangeAMP(serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadC
 		}
 	}
 
-	req, err := http.NewRequest("GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -69,8 +70,8 @@ func run(serverURL, cacheURL *url.URL, front, localAddr string) error {
 	}
 	defer ln.Close()
 
-	var poll PollFunc = func(p []byte) (io.ReadCloser, error) {
-		return exchangeAMP(serverURL, cacheURL, front, p)
+	var poll PollFunc = func(ctx context.Context, p []byte) (io.ReadCloser, error) {
+		return exchangeAMP(ctx, serverURL, cacheURL, front, p)
 	}
 	pconn := NewPollingPacketConn(poll)
 	defer pconn.Close()
