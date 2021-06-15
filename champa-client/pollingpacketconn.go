@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"io"
-	"io/ioutil"
 	"log"
 	"time"
 
@@ -180,14 +179,20 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 func (c *PollingPacketConn) processIncoming(body io.Reader) error {
 	// TODO limit size
 	// TODO timeout
-	x, err := ioutil.ReadAll(body)
-	if err != nil {
-		return err
+	any := false
+	for {
+		p, err := encapsulation.ReadData(body)
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("encapsulation.ReadData: %v", err)
+			}
+			break
+		}
+		any = true
+		c.QueuePacketConn.QueueIncoming(p, turbotunnel.DummyAddr{})
 	}
 
-	if len(x) > 0 {
-		c.QueuePacketConn.QueueIncoming(x, turbotunnel.DummyAddr{})
-
+	if any {
 		// If the payload contained one or more packets, permit pollLoop
 		// to poll immediately.
 		select {

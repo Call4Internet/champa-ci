@@ -27,8 +27,6 @@ const (
 	idleTimeout = 2 * time.Minute
 
 	// How long we may wait for downstream data before sending an empty
-	// response. If another query comes in while we are waiting, we'll send
-	// an empty response anyway and restart the delay timer for the next
 	// response.
 	maxResponseDelay = 1 * time.Second
 
@@ -195,6 +193,8 @@ func decodeRequest(req *http.Request) (turbotunnel.ClientID, []byte) {
 }
 
 func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	const maxPayloadLength = 5000
+
 	clientID, payload := decodeRequest(req)
 	if payload == nil {
 		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
@@ -224,15 +224,62 @@ func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		log.Printf("armor.NewEncoder: %v", err)
 		return
 	}
+	defer enc.Close()
 
-	// TODO maxResponseDelay
-	outgoing := handler.pconn.OutgoingQueue(clientID)
-	select {
-	case p := <-outgoing:
-		enc.Write(p)
-	default:
+	limit := maxPayloadLength
+	// We loop and bundle as many outgoing packets as will fit, up to
+	// maxPayloadLength. We wait up to maxResponseDelay for the first
+	// available packet; after that we only include whatever packets are
+	// immediately available.
+	timer := time.NewTimer(maxResponseDelay)
+	defer timer.Stop()
+	first := true
+	for {
+		var p []byte
+		unstash := handler.pconn.Unstash(clientID)
+		outgoing := handler.pconn.OutgoingQueue(clientID)
+		// Prioritize taking a packet from the stash before checking the
+		// outgoing queue.
+		select {
+		case p = <-unstash:
+		case <-timer.C:
+		default:
+			select {
+			case p = <-unstash:
+			case p = <-outgoing:
+			case <-timer.C:
+			}
+		}
+		// We wait for the first packet only. Later packets must be
+		// immediately available.
+		timer.Reset(0)
+
+		if len(p) == 0 {
+			// Timer expired, we are done bundling packets into this
+			// response.
+			break
+		}
+
+		limit -= len(p)
+		if !first && limit < 0 {
+			// This packet doesn't fit in the payload size limit.
+			// Stash it so that it will be first in line for the
+			// next response.
+			handler.pconn.Stash(p, clientID)
+			break
+		}
+		first = false
+
+		// Write the packet to the AMP response.
+		_, err := encapsulation.WriteData(enc, p)
+		if err != nil {
+			log.Printf("encapsulation.WriteData: %v", err)
+			break
+		}
+		if rw, ok := rw.(http.Flusher); ok {
+			rw.Flush()
+		}
 	}
-	enc.Close()
 }
 
 func run(listen, upstream string) error {
