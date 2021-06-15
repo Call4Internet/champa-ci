@@ -95,6 +95,12 @@ func run(serverURL, cacheURL *url.URL, front, localAddr string) error {
 		0, // default resend
 		1, // nc=1 => congestion window off
 	)
+	// TODO: We could optimize a call to conn.SetMtu here, based on a
+	// maximum URL length we want to send (such as the 8000 bytes
+	// recommended at https://datatracker.ietf.org/doc/html/rfc7230#section-3.1.1).
+	// The idea is that if we can slightly reduce the MTU from its default
+	// to permit one more packet per request, we should do it.
+	// E.g. 1400*5 = 7000, but 1320*6 = 7920.
 
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
