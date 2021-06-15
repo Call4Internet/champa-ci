@@ -158,24 +158,26 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 // processIncoming reads a packet from an HTTP response body and feeds it to the
 // incoming queue of c.QueuePacketConn.
 //
-// Whenever we receive a response with a non-empty payload, we send twice on
-// c.pollChan to permit sendLoop to send two immediate polling queries. The
+// Whenever we receive a response containing at least one packet, we send once
+// on c.pollChan to permit sendLoop to send an immediate polling request. And if
+// one of the packets is a data-carrying non-ACK packet, then we expect the
+// local KCP to also send an ACK, which has the effect of a second poll. The
 // intuition behind polling immediately after receiving is that we know the
 // server has just had something to send, it may need to send more, and the only
-// way it can send is if we give it a query to respond to. The intuition behind
-// doing *two* polls when we receive is similar to TCP slow start: we want to
-// maintain some number of queries "in flight", and the faster the server is
-// sending, the higher that number should be. If we polled only once in response
-// to received data, we would tend to have only one query in flight at a time,
-// ping-pong style. The first polling request replaces the in-flight request
-// that has just finished in our receiving data; the second grows the effective
-// in-flight window proportionally to the rate at which data-carrying responses
-// are being received. Compare to Eq. (2) of
+// way it can send is if we give it a request to respond to. The intuition
+// behind doing *two* polls when we receive is similar to TCP slow start: we
+// want to maintain some number of queries "in flight", and the faster the
+// server is sending, the higher that number should be. If we polled only once
+// in response to received data, we would tend to have only one request in
+// flight at a time, ping-pong style. The first polling request replaces the
+// in-flight request that has just finished in our receiving data; the second
+// grows the effective in-flight window proportionally to the rate at which
+// data-carrying responses are being received. Compare to Eq. (2) of
 // https://tools.ietf.org/html/rfc5681#section-3.1; the differences are that we
-// count messages, not bytes, and we don't maintain an explicit window. If a
-// response comes back without data, or if a query or response is dropped by the
-// network, then we don't poll again, which decreases the effective in-flight
-// window.
+// count HTTP requests, not bytes, and we don't maintain an explicit window. If
+// a response comes back without data, or if a query or response is dropped by
+// the network, then we don't poll again, which decreases the effective
+// in-flight window.
 func (c *PollingPacketConn) processIncoming(body io.Reader) error {
 	// TODO limit size
 	// TODO timeout
@@ -195,10 +197,6 @@ func (c *PollingPacketConn) processIncoming(body io.Reader) error {
 	if any {
 		// If the payload contained one or more packets, permit pollLoop
 		// to poll immediately.
-		select {
-		case c.pollChan <- struct{}{}:
-		default:
-		}
 		select {
 		case c.pollChan <- struct{}{}:
 		default:
