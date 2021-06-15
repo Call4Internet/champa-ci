@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"time"
@@ -179,29 +180,31 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 // the network, then we don't poll again, which decreases the effective
 // in-flight window.
 func (c *PollingPacketConn) processIncoming(body io.Reader) error {
-	// TODO limit size
+	// Safety limit on response body length.
+	lr := io.LimitReader(body, 500*1024)
 	// TODO timeout
-	any := false
+	polled := false
 	for {
-		p, err := encapsulation.ReadData(body)
+		p, err := encapsulation.ReadData(lr)
 		if err != nil {
-			if err != io.EOF {
-				log.Printf("encapsulation.ReadData: %v", err)
+			if err == io.EOF && lr.(*io.LimitedReader).N == 0 {
+				err = errors.New("response body too large")
+			} else if err == io.EOF {
+				err = nil
 			}
-			break
+			return err
 		}
-		any = true
+
+		if !polled {
+			polled = true
+			// If the payload contained one or more packets, permit
+			// pollLoop to poll immediately.
+			select {
+			case c.pollChan <- struct{}{}:
+			default:
+			}
+		}
+
 		c.QueuePacketConn.QueueIncoming(p, turbotunnel.DummyAddr{})
 	}
-
-	if any {
-		// If the payload contained one or more packets, permit pollLoop
-		// to poll immediately.
-		select {
-		case c.pollChan <- struct{}{}:
-		default:
-		}
-	}
-
-	return nil
 }
