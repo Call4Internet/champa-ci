@@ -334,7 +334,20 @@ Example:
 	}
 	listen := flag.Arg(0)
 	upstream := flag.Arg(1)
-	// TODO check upstream syntax
+	// We keep upstream as a string in order to eventually pass it to
+	// net.Dial in handleStream. But we do a preliminary resolution of the
+	// name here, in order to exit with a quick error at startup if the
+	// address cannot be parsed or resolved.
+	{
+		upstreamTCPAddr, err := net.ResolveTCPAddr("tcp", upstream)
+		if err == nil && upstreamTCPAddr.IP == nil {
+			err = fmt.Errorf("missing host in address")
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cannot parse upstream address: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	err := run(listen, upstream)
 	if err != nil {
