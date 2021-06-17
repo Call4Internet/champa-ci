@@ -321,6 +321,7 @@ func run(listen, upstream string) error {
 		ReadTimeout:  serverReadTimeout,
 		WriteTimeout: serverWriteTimeout,
 		IdleTimeout:  serverIdleTimeout,
+		// The default MaxHeaderBytes is plenty for our purposes.
 	}
 	defer server.Close()
 
