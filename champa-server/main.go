@@ -32,6 +32,20 @@ const (
 
 	// How long to wait for a TCP connection to upstream to be established.
 	upstreamDialTimeout = 30 * time.Second
+
+	// net/http Server.ReadTimeout, the maximum time allowed to read an
+	// entire request, including the body. Because we are likely to be
+	// proxying through an AMP cache, we expect requests to be small, with
+	// no streaming body.
+	serverReadTimeout = 10 * time.Second
+	// net/http Server.WriteTimeout, the maximum time allowed to write an
+	// entire response, including the body. Because we are likely to be
+	// proxying through an AMP cache, our responses are limited in size and
+	// not streaming.
+	serverWriteTimeout = 20 * time.Second
+	// net/http Server.IdleTimeout, how long to keep a keep-alive HTTP
+	// connection open, awaiting another request.
+	serverIdleTimeout = idleTimeout
 )
 
 // handleStream bidirectionally connects a client stream with a TCP socket
@@ -302,11 +316,11 @@ func run(listen, upstream string) error {
 	}
 
 	server := &http.Server{
-		Addr:    listen,
-		Handler: handler,
-		// TODO ReadHandlerTimeout
-		// TODO WriteTimeout
-		// TODO IdleTimeout?
+		Addr:         listen,
+		Handler:      handler,
+		ReadTimeout:  serverReadTimeout,
+		WriteTimeout: serverWriteTimeout,
+		IdleTimeout:  serverIdleTimeout,
 	}
 	defer server.Close()
 
