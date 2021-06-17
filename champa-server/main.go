@@ -19,6 +19,7 @@ import (
 	"github.com/xtaci/smux"
 	"www.bamsoftware.com/git/champa.git/armor"
 	"www.bamsoftware.com/git/champa.git/encapsulation"
+	"www.bamsoftware.com/git/champa.git/noise"
 	"www.bamsoftware.com/git/champa.git/turbotunnel"
 )
 
@@ -329,43 +330,69 @@ func run(listen, upstream string) error {
 }
 
 func main() {
+	var genKey bool
+	var privkeyFilename string
+	var privkeyString string
+	var pubkeyFilename string
+
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
+  %[1]s -gen-key -privkey-file PRIVKEYFILE -pubkey-file PUBKEYFILE
   %[1]s LISTENADDR UPSTREAMADDR
 
 Example:
+  %[1]s -gen-key -privkey-file server.key -pubkey-file server.pub
   %[1]s 127.0.0.1:8080 127.0.0.1:7001
 
 `, os.Args[0])
 		flag.PrintDefaults()
 	}
+	flag.BoolVar(&genKey, "gen-key", false, "generate a server keypair; print to stdout or save to files")
+	flag.StringVar(&privkeyString, "privkey", "", fmt.Sprintf("server private key (%d hex digits)", noise.KeyLen*2))
+	flag.StringVar(&privkeyFilename, "privkey-file", "", "read server private key from file (with -gen-key, write to file)")
+	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "with -gen-key, write server public key to file")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.LUTC)
 
-	if flag.NArg() != 2 {
-		flag.Usage()
-		os.Exit(1)
-	}
-	listen := flag.Arg(0)
-	upstream := flag.Arg(1)
-	// We keep upstream as a string in order to eventually pass it to
-	// net.Dial in handleStream. But we do a preliminary resolution of the
-	// name here, in order to exit with a quick error at startup if the
-	// address cannot be parsed or resolved.
-	{
-		upstreamTCPAddr, err := net.ResolveTCPAddr("tcp", upstream)
-		if err == nil && upstreamTCPAddr.IP == nil {
-			err = fmt.Errorf("missing host in address")
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "cannot parse upstream address: %v\n", err)
+	if genKey {
+		// -gen-key mode.
+
+		if flag.NArg() != 0 || privkeyString != "" {
+			flag.Usage()
 			os.Exit(1)
 		}
-	}
+		if err := generateKeypair(privkeyFilename, pubkeyFilename); err != nil {
+			fmt.Fprintf(os.Stderr, "cannot generate keypair: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Ordinary server mode.
 
-	err := run(listen, upstream)
-	if err != nil {
-		log.Fatal(err)
+		if flag.NArg() != 2 {
+			flag.Usage()
+			os.Exit(1)
+		}
+		listen := flag.Arg(0)
+		upstream := flag.Arg(1)
+		// We keep upstream as a string in order to eventually pass it to
+		// net.Dial in handleStream. But we do a preliminary resolution of the
+		// name here, in order to exit with a quick error at startup if the
+		// address cannot be parsed or resolved.
+		{
+			upstreamTCPAddr, err := net.ResolveTCPAddr("tcp", upstream)
+			if err == nil && upstreamTCPAddr.IP == nil {
+				err = fmt.Errorf("missing host in address")
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "cannot parse upstream address: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		err := run(listen, upstream)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }
