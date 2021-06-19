@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"time"
 
 	"www.bamsoftware.com/git/champa.git/encapsulation"
@@ -33,12 +34,14 @@ const (
 )
 
 // PollingPacketConn implements the net.PacketConn interface over an abstract
-// poll function. Packets passed to WriteTo are batched, encapsulated, and
-// passed to the poll function. The poll function returns its own batch of
-// incoming packets which are queued to be returned from a future call to
+// poll function. Packets addressed to remoteAddr are passed to WriteTo are
+// batched, encapsulated, and passed to the poll function. Packets addressed to
+// other remote addresses are ignored. The poll function returns its own batch
+// of incoming packets which are queued to be returned from a future call to
 // ReadFrom.
 type PollingPacketConn struct {
-	clientID turbotunnel.ClientID
+	remoteAddr net.Addr
+	clientID   turbotunnel.ClientID
 	// Sending on pollChan permits pollLoop to send an empty polling query.
 	// pollLoop also does its own polling according to a time schedule.
 	pollChan chan struct{}
@@ -51,9 +54,10 @@ type PollingPacketConn struct {
 
 type PollFunc func(context.Context, []byte) (io.ReadCloser, error)
 
-func NewPollingPacketConn(poll PollFunc) *PollingPacketConn {
+func NewPollingPacketConn(remoteAddr net.Addr, poll PollFunc) *PollingPacketConn {
 	clientID := turbotunnel.NewClientID()
 	c := &PollingPacketConn{
+		remoteAddr:      remoteAddr,
 		clientID:        clientID,
 		pollChan:        make(chan struct{}, pollLimit),
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),
@@ -79,8 +83,8 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 		payload.Write(c.clientID[:])
 
 		var p []byte
-		unstash := c.QueuePacketConn.Unstash(turbotunnel.DummyAddr{})
-		outgoing := c.QueuePacketConn.OutgoingQueue(turbotunnel.DummyAddr{})
+		unstash := c.QueuePacketConn.Unstash(c.remoteAddr)
+		outgoing := c.QueuePacketConn.OutgoingQueue(c.remoteAddr)
 		pollTimerExpired := false
 		// Block, waiting for one packet or a demand to poll. Prioritize
 		// taking a packet from the stash, then taking one from the
@@ -143,7 +147,7 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 			// We read an actual packet, but it didn't fit under the
 			// limit. Stash it so that it will be first in line for
 			// the next poll.
-			c.QueuePacketConn.Stash(p, turbotunnel.DummyAddr{})
+			c.QueuePacketConn.Stash(p, c.remoteAddr)
 		}
 
 		go func() {
@@ -211,6 +215,6 @@ func (c *PollingPacketConn) processIncoming(body io.Reader) error {
 			}
 		}
 
-		c.QueuePacketConn.QueueIncoming(p, turbotunnel.DummyAddr{})
+		c.QueuePacketConn.QueueIncoming(p, c.remoteAddr)
 	}
 }

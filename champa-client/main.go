@@ -73,7 +73,7 @@ func run(serverURL, cacheURL *url.URL, front, localAddr string) error {
 	var poll PollFunc = func(ctx context.Context, p []byte) (io.ReadCloser, error) {
 		return exchangeAMP(ctx, serverURL, cacheURL, front, p)
 	}
-	pconn := NewPollingPacketConn(poll)
+	pconn := NewPollingPacketConn(turbotunnel.DummyAddr{}, poll)
 	defer pconn.Close()
 
 	// Open a KCP conn on the PacketConn.
