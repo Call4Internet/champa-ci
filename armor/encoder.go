@@ -171,9 +171,5 @@ func (enc *elementEncoder) Close() error {
 			_, err = enc.w.Write([]byte("\n</pre>\n"))
 		}
 	}
-	_, err2 := enc.w.Write([]byte(boilerplateEnd))
-	if err == nil {
-		err = err2
-	}
 	return err
 }
