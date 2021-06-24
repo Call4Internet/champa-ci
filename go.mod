@@ -1,6 +1,6 @@
 module www.bamsoftware.com/git/champa.git
 
-go 1.15
+go 1.11
 
 require (
 	github.com/flynn/noise v1.0.0
