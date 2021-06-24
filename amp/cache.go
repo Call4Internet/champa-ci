@@ -162,18 +162,17 @@ func CacheURL(pubURL, cacheURL *url.URL, contentType string) (*url.URL, error) {
 	if cacheURL.RawQuery != "" {
 		return nil, fmt.Errorf("cache URL may not contain a query")
 	}
-	if cacheURL.Fragment != "" || cacheURL.RawFragment != "" {
+	if cacheURL.Fragment != "" {
 		return nil, fmt.Errorf("cache URL may not contain a fragment")
 	}
 
 	return &url.URL{
-		Scheme:      cacheURL.Scheme,
-		User:        cacheURL.User,
-		Host:        resultHost,
-		Path:        resultPath,
-		RawPath:     resultRawPath,
-		RawQuery:    pubURL.RawQuery,
-		Fragment:    pubURL.Fragment,
-		RawFragment: pubURL.RawFragment,
+		Scheme:   cacheURL.Scheme,
+		User:     cacheURL.User,
+		Host:     resultHost,
+		Path:     resultPath,
+		RawPath:  resultRawPath,
+		RawQuery: pubURL.RawQuery,
+		Fragment: pubURL.Fragment,
 	}, nil
 }
