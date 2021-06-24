@@ -183,54 +183,35 @@ type Handler struct {
 // nil. The payload is always non-nil after a successful decoding, even if the
 // payload is empty.
 func decodeRequest(req *http.Request) (turbotunnel.ClientID, []byte) {
-	if req.Method != "GET" {
-		return turbotunnel.ClientID{}, nil
-	}
-
-	var clientID turbotunnel.ClientID
-	var payload []byte
-
 	// Check the version indicator of the incoming client–server protocol.
 	switch {
 	case strings.HasPrefix(req.URL.Path, "/0"):
 		// Version "0"'s payload is base64-encoded, using the URL-safe
 		// alphabet without padding, in the final path component
 		// (earlier path components are ignored).
-		var err error
-		_, encoded := path.Split(req.URL.Path[2:]) // Remove version prefix.
-		payload, err = base64.RawURLEncoding.DecodeString(encoded)
+		_, encoded := path.Split(req.URL.Path[2:]) // Remove "/0" prefix.
+		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
 		if err != nil {
 			return turbotunnel.ClientID{}, nil
 		}
-		n := copy(clientID[:], payload)
-		payload = payload[n:]
+		var clientID turbotunnel.ClientID
+		n := copy(clientID[:], decoded)
 		if n != len(clientID) {
 			return turbotunnel.ClientID{}, nil
 		}
+		payload := decoded[n:]
+		return clientID, payload
 	default:
 		return turbotunnel.ClientID{}, nil
 	}
-
-	return clientID, payload
 }
 
 func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	const maxPayloadLength = 5000
 
-	clientID, payload := decodeRequest(req)
-	if payload == nil {
+	if req.Method != "GET" {
 		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
-	}
-
-	// Read incoming packets from the payload.
-	r := bytes.NewReader(payload)
-	for {
-		p, err := encapsulation.ReadData(r)
-		if err != nil {
-			break
-		}
-		handler.pconn.QueueIncoming(p, clientID)
 	}
 
 	rw.Header().Set("Content-Type", "text/html")
@@ -247,6 +228,27 @@ func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer enc.Close()
+
+	clientID, payload := decodeRequest(req)
+	if payload == nil {
+		// Could not decode the client request. We do not even have a
+		// meaningful clientID or nonce. This may be a result of the
+		// client deliberately sending a short request for traffic
+		// shaping purposes. Send back a dummy, though still
+		// AMP-compatible, response.
+		// TODO: random padding.
+		return
+	}
+
+	// Read incoming packets from the payload.
+	r := bytes.NewReader(payload)
+	for {
+		p, err := encapsulation.ReadData(r)
+		if err != nil {
+			break
+		}
+		handler.pconn.QueueIncoming(p, clientID)
+	}
 
 	limit := maxPayloadLength
 	// We loop and bundle as many outgoing packets as will fit, up to
