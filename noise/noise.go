@@ -7,7 +7,6 @@ package noise
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -214,23 +213,13 @@ func NewServer(rwc io.ReadWriteCloser, serverPrivkey []byte) (io.ReadWriteCloser
 	return newSocket(rwc, recvCipher, sendCipher), nil
 }
 
-// GenerateKeypair generates a private key and the corresponding public key.
+// GenerateKeypair generates a private key. The corresponding private key can be
+// generated using PubkeyFromPrivkey.
 //
 // https://noiseprotocol.org/noise.html#dh-functions
-func GenerateKeypair() (privkey, pubkey []byte, err error) {
+func GeneratePrivkey() ([]byte, error) {
 	pair, err := noise.DH25519.GenerateKeypair(rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// pair.Public is already filled in; assert here that PubkeyFromPrivkey
-	// agrees with it.
-	derivedPubkey := PubkeyFromPrivkey(pair.Private)
-	if !bytes.Equal(derivedPubkey, pair.Public) {
-		panic(fmt.Sprintf("expected pubkey %x, got %x", derivedPubkey, pair.Public))
-	}
-
-	return pair.Private, pair.Public, nil
+	return pair.Private, err
 }
 
 // PubkeyFromPrivkey returns the public key that corresponds to privkey.
