@@ -47,10 +47,11 @@ func exchangeAMP(ctx context.Context, serverURL, cacheURL *url.URL, front string
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
+	req = req.WithContext(ctx)
 
 	// Do domain fronting, if requested.
 	if front != "" {
