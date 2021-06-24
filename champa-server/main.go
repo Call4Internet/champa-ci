@@ -96,11 +96,18 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 
 // acceptStreams wraps a KCP session in a Noise channel and an smux.Session,
 // then awaits smux streams. It passes each stream to handleStream.
-func acceptStreams(conn *kcp.UDPSession, upstream string) error {
+func acceptStreams(conn *kcp.UDPSession, upstream string, privkey []byte) error {
+	// Put a Noise channel on top of the KCP conn.
+	rw, err := noise.NewServer(conn, privkey)
+	if err != nil {
+		return err
+	}
+
+	// Put an smux session on top of the encrypted Noise channel.
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveTimeout = idleTimeout
-	sess, err := smux.Server(conn, smuxConfig)
+	sess, err := smux.Server(rw, smuxConfig)
 	if err != nil {
 		return err
 	}
@@ -134,7 +141,7 @@ func acceptStreams(conn *kcp.UDPSession, upstream string) error {
 
 // acceptSessions listens for incoming KCP connections and passes them to
 // acceptStreams.
-func acceptSessions(ln *kcp.Listener, upstream string) error {
+func acceptSessions(ln *kcp.Listener, upstream string, privkey []byte) error {
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
@@ -159,7 +166,7 @@ func acceptSessions(ln *kcp.Listener, upstream string) error {
 				log.Printf("end session %08x", conn.GetConv())
 				conn.Close()
 			}()
-			err := acceptStreams(conn, upstream)
+			err := acceptStreams(conn, upstream, privkey)
 			if err != nil {
 				log.Printf("session %08x acceptStreams: %v", conn.GetConv(), err)
 			}
@@ -297,7 +304,7 @@ func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func run(listen, upstream string) error {
+func run(listen, upstream string, privkey []byte) error {
 	// Start up the virtual PacketConn for turbotunnel.
 	pconn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2)
 	ln, err := kcp.ServeConn(nil, 0, 0, pconn)
@@ -306,7 +313,7 @@ func run(listen, upstream string) error {
 	}
 	defer ln.Close()
 	go func() {
-		err := acceptSessions(ln, upstream)
+		err := acceptSessions(ln, upstream, privkey)
 		if err != nil {
 			log.Printf("acceptSessions: %v", err)
 		}
@@ -390,7 +397,37 @@ Example:
 			}
 		}
 
-		err := run(listen, upstream)
+		var privkey []byte
+		if privkeyFilename != "" && privkeyString != "" {
+			fmt.Fprintf(os.Stderr, "only one of -privkey and -privkey-file may be used\n")
+			os.Exit(1)
+		} else if privkeyFilename != "" {
+			var err error
+			privkey, err = readKeyFromFile(privkeyFilename)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "cannot read privkey from file: %v\n", err)
+				os.Exit(1)
+			}
+		} else if privkeyString != "" {
+			var err error
+			privkey, err = noise.DecodeKey(privkeyString)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "privkey format error: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			log.Println("generating a temporary one-time keypair")
+			log.Println("use the -privkey or -privkey-file option for a persistent server keypair")
+			var err error
+			privkey, _, err = noise.GenerateKeypair()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			log.Printf("pubkey %x", noise.PubkeyFromPrivkey(privkey))
+		}
+
+		err := run(listen, upstream, privkey)
 		if err != nil {
 			log.Fatal(err)
 		}

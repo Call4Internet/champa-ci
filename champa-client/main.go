@@ -14,11 +14,22 @@ import (
 
 	"github.com/xtaci/kcp-go/v5"
 	"github.com/xtaci/smux"
+	"www.bamsoftware.com/git/champa.git/noise"
 	"www.bamsoftware.com/git/champa.git/turbotunnel"
 )
 
 // smux streams will be closed after this much time without receiving data.
 const idleTimeout = 2 * time.Minute
+
+// readKeyFromFile reads a key from a named file.
+func readKeyFromFile(filename string) ([]byte, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return noise.ReadKey(f)
+}
 
 func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	stream, err := sess.OpenStream()
@@ -63,7 +74,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	return err
 }
 
-func run(serverURL, cacheURL *url.URL, front, localAddr string) error {
+func run(serverURL, cacheURL *url.URL, front, localAddr string, pubkey []byte) error {
 	ln, err := net.Listen("tcp", localAddr)
 	if err != nil {
 		return err
@@ -103,10 +114,17 @@ func run(serverURL, cacheURL *url.URL, front, localAddr string) error {
 	// to permit one more packet per request, we should do it.
 	// E.g. 1400*5 = 7000, but 1320*6 = 7920.
 
+	// Put a Noise channel on top of the KCP conn.
+	rw, err := noise.NewClient(conn, pubkey)
+	if err != nil {
+		return err
+	}
+
+	// Start a smux session on the Noise channel.
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveTimeout = idleTimeout
-	sess, err := smux.Client(conn, smuxConfig)
+	sess, err := smux.Client(rw, smuxConfig)
 	if err != nil {
 		return fmt.Errorf("opening smux session: %v", err)
 	}
@@ -133,6 +151,8 @@ func run(serverURL, cacheURL *url.URL, front, localAddr string) error {
 func main() {
 	var cache string
 	var front string
+	var pubkeyFilename string
+	var pubkeyString string
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -146,6 +166,8 @@ Example:
 	}
 	flag.StringVar(&cache, "cache", "", "URL of AMP cache")
 	flag.StringVar(&front, "front", "", "domain to domain-front HTTPS requests with")
+	flag.StringVar(&pubkeyString, "pubkey", "", fmt.Sprintf("server public key (%d hex digits)", noise.KeyLen*2))
+	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "read server public key from file")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.LUTC)
@@ -170,7 +192,30 @@ Example:
 		}
 	}
 
-	err = run(serverURL, cacheURL, front, localAddr)
+	var pubkey []byte
+	if pubkeyFilename != "" && pubkeyString != "" {
+		fmt.Fprintf(os.Stderr, "only one of -pubkey and -pubkey-file may be used\n")
+		os.Exit(1)
+	} else if pubkeyFilename != "" {
+		var err error
+		pubkey, err = readKeyFromFile(pubkeyFilename)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cannot read pubkey from file: %v\n", err)
+			os.Exit(1)
+		}
+	} else if pubkeyString != "" {
+		var err error
+		pubkey, err = noise.DecodeKey(pubkeyString)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pubkey format error: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "the -pubkey or -pubkey-file option is required\n")
+		os.Exit(1)
+	}
+
+	err = run(serverURL, cacheURL, front, localAddr, pubkey)
 	if err != nil {
 		log.Fatal(err)
 	}
