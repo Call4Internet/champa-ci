@@ -161,6 +161,7 @@ func acceptSessions(ln *kcp.Listener, upstream string, privkey []byte) error {
 			0, // default resend
 			1, // nc=1 => congestion window off
 		)
+		conn.SetWindowSize(1024, 1024) // Default is 32, 32.
 		go func() {
 			defer func() {
 				log.Printf("end session %08x", conn.GetConv())
