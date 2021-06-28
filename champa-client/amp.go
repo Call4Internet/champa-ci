@@ -73,10 +73,6 @@ func exchangeAMP(ctx context.Context, serverURL, cacheURL *url.URL, front string
 		resp.Body.Close()
 		return nil, fmt.Errorf("server returned status %v", resp.Status)
 	}
-	if loc, err := resp.Location(); err == nil {
-		resp.Body.Close()
-		return nil, fmt.Errorf("server returned a redirect (Location: %+q)", loc)
-	}
 
 	dec, err := armor.NewDecoder(bufio.NewReader(resp.Body))
 	if err != nil {
