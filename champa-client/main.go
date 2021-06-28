@@ -107,6 +107,8 @@ func run(serverURL, cacheURL *url.URL, front, localAddr string, pubkey []byte) e
 		0, // default resend
 		1, // nc=1 => congestion window off
 	)
+	// ACK received data immediately; this is good in our polling model.
+	conn.SetACKNoDelay(true)
 	conn.SetWindowSize(1024, 1024) // Default is 32, 32.
 	// TODO: We could optimize a call to conn.SetMtu here, based on a
 	// maximum URL length we want to send (such as the 8000 bytes

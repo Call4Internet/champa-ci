@@ -42,9 +42,6 @@ const (
 type PollingPacketConn struct {
 	remoteAddr net.Addr
 	clientID   turbotunnel.ClientID
-	// Sending on pollChan permits pollLoop to send an empty polling query.
-	// pollLoop also does its own polling according to a time schedule.
-	pollChan chan struct{}
 	// QueuePacketConn is the direct receiver of ReadFrom and WriteTo calls.
 	// sendLoop, via send, removes messages from the outgoing queue that
 	// were placed there by WriteTo, and inserts messages into the incoming
@@ -59,7 +56,6 @@ func NewPollingPacketConn(remoteAddr net.Addr, poll PollFunc) *PollingPacketConn
 	c := &PollingPacketConn{
 		remoteAddr:      remoteAddr,
 		clientID:        clientID,
-		pollChan:        make(chan struct{}, pollLimit),
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),
 	}
 	go func() {
@@ -99,7 +95,6 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 				select {
 				case p = <-unstash:
 				case p = <-outgoing:
-				case <-c.pollChan:
 				case <-pollTimer.C:
 					pollTimerExpired = true
 				}
@@ -114,8 +109,7 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 				pollDelay = maxPollDelay
 			}
 		} else {
-			// We're sending an actual data packet, or we're polling
-			// in response to a received packet. Reset the poll
+			// We're sending an actual data packet. Reset the poll
 			// delay to initial.
 			if !pollTimer.Stop() {
 				<-pollTimer.C
@@ -129,13 +123,6 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 		for len(p) > 0 && payload.Len()+len(p) <= maxPayloadLength {
 			// Encapsulate the packet into the payload.
 			encapsulation.WriteData(&payload, p)
-
-			// A data-carrying packet displaces one pending poll
-			// opportunity, if any.
-			select {
-			case <-c.pollChan:
-			default:
-			}
 
 			select {
 			case p = <-outgoing:
@@ -170,30 +157,13 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 // processIncoming reads a packet from an HTTP response body and feeds it to the
 // incoming queue of c.QueuePacketConn.
 //
-// Whenever we receive a response containing at least one packet, we send once
-// on c.pollChan to permit sendLoop to send an immediate polling request. And if
-// one of the packets is a data-carrying non-ACK packet, then we expect the
-// local KCP to also send an ACK, which has the effect of a second poll. The
-// intuition behind polling immediately after receiving is that we know the
-// server has just had something to send, it may need to send more, and the only
-// way it can send is if we give it a request to respond to. The intuition
-// behind doing *two* polls when we receive is similar to TCP slow start: we
-// want to maintain some number of queries "in flight", and the faster the
-// server is sending, the higher that number should be. If we polled only once
-// in response to received data, we would tend to have only one request in
-// flight at a time, ping-pong style. The first polling request replaces the
-// in-flight request that has just finished in our receiving data; the second
-// grows the effective in-flight window proportionally to the rate at which
-// data-carrying responses are being received. Compare to Eq. (2) of
-// https://tools.ietf.org/html/rfc5681#section-3.1; the differences are that we
-// count HTTP requests, not bytes, and we don't maintain an explicit window. If
-// a response comes back without data, or if a query or response is dropped by
-// the network, then we don't poll again, which decreases the effective
-// in-flight window.
+// In main, we've done SetACKNoDelay on the *kcp.UDPSession. I expect this will
+// cause us, the client, to ACK incoming data immediately, which means that
+// whenever we receive ACKable data, we immediately do another poll (carrying an
+// ACK), which is what we want anyway while we're actively downloading.
 func (c *PollingPacketConn) processIncoming(body io.Reader) error {
 	// Safety limit on response body length.
 	lr := io.LimitReader(body, 500*1024)
-	polled := false
 	for {
 		p, err := encapsulation.ReadData(lr)
 		if err != nil {
@@ -203,16 +173,6 @@ func (c *PollingPacketConn) processIncoming(body io.Reader) error {
 				err = nil
 			}
 			return err
-		}
-
-		if !polled {
-			polled = true
-			// If the payload contained one or more packets, permit
-			// pollLoop to poll immediately.
-			select {
-			case c.pollChan <- struct{}{}:
-			default:
-			}
 		}
 
 		c.QueuePacketConn.QueueIncoming(p, c.remoteAddr)
