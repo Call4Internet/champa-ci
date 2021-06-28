@@ -263,16 +263,22 @@ func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		var p []byte
 		unstash := handler.pconn.Unstash(clientID)
 		outgoing := handler.pconn.OutgoingQueue(clientID)
-		// Prioritize taking a packet from the stash before checking the
-		// outgoing queue.
+		// Prioritize taking a packet first from the stash, then from
+		// the outgoing queue, then finally check for expiration of the
+		// timer. (We continue to bundle packets even after the timer
+		// expires, as long as the packets are immediately available.)
 		select {
 		case p = <-unstash:
-		case <-timer.C:
 		default:
 			select {
 			case p = <-unstash:
 			case p = <-outgoing:
-			case <-timer.C:
+			default:
+				select {
+				case p = <-unstash:
+				case p = <-outgoing:
+				case <-timer.C:
+				}
 			}
 		}
 		// We wait for the first packet only. Later packets must be
