@@ -73,6 +73,35 @@ func exchangeAMP(ctx context.Context, serverURL, cacheURL *url.URL, front string
 		resp.Body.Close()
 		return nil, fmt.Errorf("server returned status %v", resp.Status)
 	}
+	if _, err := resp.Location(); err == nil {
+		// The Google AMP Cache can return a "silent redirect" with
+		// status 200, a Location header set, and a JavaScript redirect
+		// in the body. The redirect points directly at the origin
+		// server for the request (bypassing the AMP cache). We do not
+		// follow redirects nor execute JavaScript, but in any case we
+		// cannot extract information from this response and it's better
+		// to treat it as a poll error, rather than an EOF when given to
+		// the AMP armor decoder.
+		//
+		// Such a response looks like this (header slightly excerpted):
+		//
+		// HTTP/2 200 OK
+		// Cache-Control: private
+		// Content-Type: text/html; charset=UTF-8
+		// Location: https://example.com/champa/...
+		// Server: sffe
+		// X-Silent-Redirect: true
+		//
+		// <HTML><HEAD>
+		// <meta http-equiv="content-type" content="text/html;charset=utf-8">
+		// <TITLE>Redirecting</TITLE>
+		// <META HTTP-EQUIV="refresh" content="0; url=https://example.com/champa/...">
+		// </HEAD>
+		// <BODY onLoad="location.replace('https://example.com/champa/...'+document.location.hash)">
+		// </BODY></HTML>
+		resp.Body.Close()
+		return nil, fmt.Errorf("server returned a Location header")
+	}
 
 	dec, err := armor.NewDecoder(bufio.NewReader(resp.Body))
 	if err != nil {

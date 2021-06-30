@@ -147,6 +147,7 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 			body, err := poll(ctx, payload.Bytes())
 			if err != nil {
 				log.Printf("poll: %v", err)
+				// TODO: perhaps self-throttle when this happens.
 				return
 			}
 			defer body.Close()
