@@ -29,7 +29,7 @@ const (
 
 	// How long we may wait for downstream data before sending an empty
 	// response.
-	maxResponseDelay = 1 * time.Second
+	maxResponseDelay = 100 * time.Millisecond
 
 	// How long to wait for a TCP connection to upstream to be established.
 	upstreamDialTimeout = 30 * time.Second
