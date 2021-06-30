@@ -119,8 +119,12 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 		pollTimer.Reset(pollDelay)
 
 		// Grab as many more packets as are immediately available and
-		// fit in maxPayloadLength.
-		for len(p) > 0 && payload.Len()+len(p) <= maxPayloadLength {
+		// fit in maxPayloadLength. Always include the first packet,
+		// even if it doesn't fit.
+		first := true
+		for len(p) > 0 && (first || payload.Len()+len(p) <= maxPayloadLength) {
+			first = false
+
 			// Encapsulate the packet into the payload.
 			encapsulation.WriteData(&payload, p)
 
