@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"sync"
@@ -80,6 +81,8 @@ func run(serverURL, cacheURL *url.URL, front, localAddr string, pubkey []byte) e
 		return err
 	}
 	defer ln.Close()
+
+	http.DefaultTransport.(*http.Transport).MaxConnsPerHost = 20
 
 	var poll PollFunc = func(ctx context.Context, p []byte) (io.ReadCloser, error) {
 		return exchangeAMP(ctx, serverURL, cacheURL, front, p)
