@@ -167,8 +167,8 @@ Example:
 `, os.Args[0])
 		flag.PrintDefaults()
 	}
-	flag.StringVar(&cache, "cache", "", "URL of AMP cache")
-	flag.StringVar(&front, "front", "", "domain to domain-front HTTPS requests with")
+	flag.StringVar(&cache, "cache", "", "URL of AMP cache (try https://cdn.ampproject.org/)")
+	flag.StringVar(&front, "front", "", "domain to domain-front HTTPS requests with (try www.google.com)")
 	flag.StringVar(&pubkeyString, "pubkey", "", fmt.Sprintf("server public key (%d hex digits)", noise.KeyLen*2))
 	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "read server public key from file")
 	flag.Parse()
