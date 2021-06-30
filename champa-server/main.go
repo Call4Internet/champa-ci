@@ -107,6 +107,8 @@ func acceptStreams(conn *kcp.UDPSession, upstream string, privkey []byte) error 
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveTimeout = idleTimeout
+	smuxConfig.MaxReceiveBuffer = 16 * 1024 * 1024 // default is 4 * 1024 * 1024
+	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024   // default is 65536
 	sess, err := smux.Server(rw, smuxConfig)
 	if err != nil {
 		return err

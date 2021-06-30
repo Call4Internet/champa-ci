@@ -127,6 +127,8 @@ func run(serverURL, cacheURL *url.URL, front, localAddr string, pubkey []byte) e
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveTimeout = idleTimeout
+	smuxConfig.MaxReceiveBuffer = 4 * 1024 * 1024 // default is 4 * 1024 * 1024
+	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024  // default is 65536
 	sess, err := smux.Client(rw, smuxConfig)
 	if err != nil {
 		return fmt.Errorf("opening smux session: %v", err)
