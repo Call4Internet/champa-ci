@@ -19,7 +19,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-// The length of public and private keys as returned by GenerateKeypair.
+// The length of public and private keys as returned by GeneratePrivkey.
 const KeyLen = 32
 
 // cipherSuite represents 25519_ChaChaPoly_BLAKE2s.
@@ -214,7 +214,7 @@ func NewServer(rwc io.ReadWriteCloser, serverPrivkey []byte) (io.ReadWriteCloser
 	return newSocket(rwc, recvCipher, sendCipher), nil
 }
 
-// GenerateKeypair generates a private key. The corresponding private key can be
+// GeneratePrivkey generates a private key. The corresponding private key can be
 // generated using PubkeyFromPrivkey.
 //
 // https://noiseprotocol.org/noise.html#dh-functions
