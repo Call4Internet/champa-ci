@@ -8,7 +8,7 @@ https://github.com/ampproject/amphtml/blob/main/docs/spec/amp-cache-modification
 
 The encoding is based on ones created by Ivan Markin. See codec/amp/ in
 https://github.com/nogoegst/amper and discussion at
-https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/-/issues/25985.
+https://bugs.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/25985.
 
 The encoding algorithm works as follows. Base64-encode the input. Prepend the
 input with the byte '0'; this is a protocol version indicator that the decoder
