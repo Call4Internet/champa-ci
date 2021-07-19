@@ -183,7 +183,7 @@ zNDU2Nzg
 	}
 }
 
-func roundtrip(s string) (string, error) {
+func roundTrip(s string) (string, error) {
 	var encoded strings.Builder
 	enc, err := NewEncoder(&encoded)
 	if err != nil {
@@ -200,7 +200,7 @@ func roundtrip(s string) (string, error) {
 	return decodeToString(encoded.String())
 }
 
-func TestRoundtrip(t *testing.T) {
+func TestRoundTrip(t *testing.T) {
 	lengths := make([]int, 0)
 	// Test short strings and lengths around elementSizeLimit thresholds.
 	for i := 0; i < bytesPerChunk*2; i++ {
@@ -214,7 +214,7 @@ func TestRoundtrip(t *testing.T) {
 		buf := make([]byte, n)
 		rand.Read(buf)
 		input := string(buf)
-		output, err := roundtrip(input)
+		output, err := roundTrip(input)
 		if err != nil {
 			t.Errorf("length %d → error %v", n, err)
 			continue

@@ -34,7 +34,7 @@ func mustWritePadding(w io.Writer, n int) int {
 }
 
 // Test that ReadData(WriteData()) recovers the original data.
-func TestRoundtrip(t *testing.T) {
+func TestRoundTrip(t *testing.T) {
 	// Test above and below interesting thresholds.
 	for _, i := range []int{
 		0x00, 0x01,
