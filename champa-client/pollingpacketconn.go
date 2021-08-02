@@ -28,9 +28,6 @@ const (
 	// How long we wait for a start-to-finish request–response exchange,
 	// including reading the response body.
 	pollTimeout = 30 * time.Second
-
-	// The maximum number of pending polls we may have scheduled.
-	pollLimit = 20
 )
 
 // PollingPacketConn implements the net.PacketConn interface over an abstract
