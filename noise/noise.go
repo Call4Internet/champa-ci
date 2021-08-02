@@ -216,8 +216,6 @@ func NewServer(rwc io.ReadWriteCloser, serverPrivkey []byte) (io.ReadWriteCloser
 
 // GeneratePrivkey generates a private key. The corresponding private key can be
 // generated using PubkeyFromPrivkey.
-//
-// https://noiseprotocol.org/noise.html#dh-functions
 func GeneratePrivkey() ([]byte, error) {
 	pair, err := noise.DH25519.GenerateKeypair(rand.Reader)
 	return pair.Private, err
