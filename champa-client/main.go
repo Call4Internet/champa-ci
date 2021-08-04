@@ -52,7 +52,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 			// smux Stream.Write may return io.EOF.
 			err = nil
 		}
-		if err != nil {
+		if err != nil && err != io.ErrClosedPipe {
 			log.Printf("stream %08x:%d copy stream←local: %v", conv, stream.ID(), err)
 		}
 		local.CloseRead()
