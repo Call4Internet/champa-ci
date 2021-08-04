@@ -171,7 +171,7 @@ func acceptSessions(ln *kcp.Listener, upstream string, privkey []byte) error {
 				conn.Close()
 			}()
 			err := acceptStreams(conn, upstream, privkey)
-			if err != nil {
+			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 				log.Printf("session %08x acceptStreams: %v", conn.GetConv(), err)
 			}
 		}()
