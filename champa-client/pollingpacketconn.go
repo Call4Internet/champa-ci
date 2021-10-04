@@ -156,7 +156,7 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 	}
 }
 
-// processIncoming reads a packet from an HTTP response body and feeds it to the
+// processIncoming reads a packet from a poll response body and feeds it to the
 // incoming queue of c.QueuePacketConn.
 //
 // In main, we've done SetACKNoDelay on the *kcp.UDPSession. I expect this will
