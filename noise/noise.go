@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 
 	"github.com/flynn/noise"
@@ -22,8 +23,27 @@ import (
 // The length of public and private keys as returned by GeneratePrivkey.
 const KeyLen = 32
 
+const (
+	MsgTypeHandshakeInit = 1
+	MsgTypeHandshakeResp = 2
+	MsgTypeTransport     = 4
+)
+
 // cipherSuite represents 25519_ChaChaPoly_BLAKE2s.
 var cipherSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s)
+
+func ReadMessageFrom(conn net.PacketConn) (byte, []byte, net.Addr, error) {
+	var buf [1500]byte
+	for {
+		n, addr, err := conn.ReadFrom(buf[:])
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		if n >= 1 {
+			return buf[0], buf[1:n], addr, nil
+		}
+	}
+}
 
 // readMessage reads a length-prefixed message from r. It returns a nil error
 // only when a complete message was read. It returns io.EOF only when there were
