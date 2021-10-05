@@ -165,10 +165,10 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
-  %[1]s [-cache CACHEURL] [-front DOMAIN] SERVERURL LOCALADDR
+  %[1]s -pubkey-file PUBKEYFILE [-cache CACHEURL] [-front DOMAIN] SERVERURL LOCALADDR
 
 Example:
-  %[1]s -cache https://amp.cache.example/ -front amp.cache.example https://server.example/champa/ 127.0.0.1:7000
+  %[1]s -pubkey-file server.pub -cache https://amp.cache.example/ -front amp.cache.example https://server.example/champa/ 127.0.0.1:7000
 
 `, os.Args[0])
 		flag.PrintDefaults()

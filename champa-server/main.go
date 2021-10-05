@@ -357,11 +357,11 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
   %[1]s -gen-key -privkey-file PRIVKEYFILE -pubkey-file PUBKEYFILE
-  %[1]s LISTENADDR UPSTREAMADDR
+  %[1]s -privkey-file PRIVKEYFILE LISTENADDR UPSTREAMADDR
 
 Example:
   %[1]s -gen-key -privkey-file server.key -pubkey-file server.pub
-  %[1]s 127.0.0.1:8080 127.0.0.1:7001
+  %[1]s -privkey-file server.key 127.0.0.1:8080 127.0.0.1:7001
 
 `, os.Args[0])
 		flag.PrintDefaults()
