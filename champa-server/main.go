@@ -97,20 +97,14 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 
 // acceptStreams wraps a KCP session in a Noise channel and an smux.Session,
 // then awaits smux streams. It passes each stream to handleStream.
-func acceptStreams(conn *kcp.UDPSession, upstream string, privkey []byte) error {
-	// Put a Noise channel on top of the KCP conn.
-	rw, err := noise.NewServer(conn, privkey)
-	if err != nil {
-		return err
-	}
-
-	// Put an smux session on top of the encrypted Noise channel.
+func acceptStreams(conn *kcp.UDPSession, upstream string) error {
+	// Put an smux session on top of the KCP connection.
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveTimeout = idleTimeout
 	smuxConfig.MaxReceiveBuffer = 16 * 1024 * 1024 // default is 4 * 1024 * 1024
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024   // default is 65536
-	sess, err := smux.Server(rw, smuxConfig)
+	sess, err := smux.Server(conn, smuxConfig)
 	if err != nil {
 		return err
 	}
@@ -144,7 +138,7 @@ func acceptStreams(conn *kcp.UDPSession, upstream string, privkey []byte) error 
 
 // acceptSessions listens for incoming KCP connections and passes them to
 // acceptStreams.
-func acceptSessions(ln *kcp.Listener, upstream string, privkey []byte) error {
+func acceptSessions(ln *kcp.Listener, upstream string) error {
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
@@ -170,7 +164,7 @@ func acceptSessions(ln *kcp.Listener, upstream string, privkey []byte) error {
 				log.Printf("end session %08x", conn.GetConv())
 				conn.Close()
 			}()
-			err := acceptStreams(conn, upstream, privkey)
+			err := acceptStreams(conn, upstream)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 				log.Printf("session %08x acceptStreams: %v", conn.GetConv(), err)
 			}
@@ -316,23 +310,137 @@ func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// noiseLoop is the Noise interface between an external noiseConn, which sends
+// and receives encrypted Noise messages, and an internal plainConn, which sends
+// and receives normal plaintext packets. This function tracks the state of
+// Noise handshakes and a map of ongoing sessions, proxies packets between the
+// connections while a session is active, and removes session from the map when
+// they are finished.
+func noiseLoop(noiseConn net.PacketConn, plainConn *turbotunnel.QueuePacketConn, privkey []byte) error {
+	sessions := make(map[turbotunnel.ClientID]*noise.Session)
+	var sessionsLock sync.RWMutex
+
+	for {
+		msgType, msg, addr, err := noise.ReadMessageFrom(noiseConn)
+		if err != nil {
+			if err, ok := err.(net.Error); ok && err.Temporary() {
+				continue
+			}
+			return err
+		}
+
+		sessionsLock.RLock()
+		sess := sessions[addr.(turbotunnel.ClientID)]
+		sessionsLock.RUnlock()
+
+		switch msgType {
+		// If the msgType of the incoming Noise message is
+		// MsgTypeHandshakeInit, send back a MsgTypeHandshakeResp and
+		// begin a new session for addr.
+		case noise.MsgTypeHandshakeInit:
+			if sess != nil {
+				// Already have a session for this addr.
+				continue
+			}
+
+			// Send back a MsgTypeHandshakeResp to permit the
+			// initiator to complete the Noise handshake.
+			p := []byte{noise.MsgTypeHandshakeResp}
+			sess, p, err := noise.AcceptHandshake(p, msg, privkey)
+			if err != nil {
+				return err
+			}
+			_, err = noiseConn.WriteTo(p, addr)
+			if err != nil {
+				if err, ok := err.(net.Error); ok && err.Temporary() {
+					continue
+				}
+				return err
+			}
+
+			// We have enough information at this point to start a
+			// session. Store it in the map.
+			sessionsLock.Lock()
+			sessions[addr.(turbotunnel.ClientID)] = sess
+			sessionsLock.Unlock()
+
+			// Start a goroutine for sending to the peer on this
+			// session. Reading from the peer is handled in the
+			// MsgTypeTransport case in the top-level switch.
+			go func() {
+				defer func() {
+					sessionsLock.Lock()
+					delete(sessions, addr.(turbotunnel.ClientID))
+					sessionsLock.Unlock()
+				}()
+				for p := range plainConn.OutgoingQueue(addr) {
+					buf := []byte{noise.MsgTypeTransport}
+					buf, err := sess.Encrypt(buf, p)
+					if err != nil {
+						log.Printf("Encrypt: %v", err)
+						break
+					}
+					_, err = noiseConn.WriteTo(buf, addr)
+					if err != nil {
+						log.Printf("WriteTo: %v", err)
+						if err, ok := err.(net.Error); ok && err.Temporary() {
+							continue
+						}
+						break
+					}
+				}
+			}()
+
+		// If the msgType of the incoming Noise message is
+		// MsgTypeTransport, decrypt the message and queue the contents
+		// with plainConn.
+		case noise.MsgTypeTransport:
+			if sess == nil {
+				// No session yet for this addr.
+				continue
+			}
+			p, err := sess.Decrypt(nil, msg)
+			if err != nil {
+				log.Printf("Decrypt: %v", err)
+				continue
+			}
+			plainConn.QueueIncoming(p, addr)
+
+		default:
+			log.Printf("unknown msgType %d", msgType)
+		}
+	}
+}
+
 func run(listen, upstream string, privkey []byte) error {
-	// Start up the virtual PacketConn for turbotunnel.
-	pconn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2)
-	ln, err := kcp.ServeConn(nil, 0, 0, pconn)
+	// noiseConn is the packet interface that communicates with the AMP/HTTP
+	// Handler; it deals in encrypted Noise messages. plainConn is the
+	// packet interface that communicates with KCP. noiseLoop sits in the
+	// middle, handling Noise handshakes and sessions, and
+	// encrypting/decrypting between the two net.PacketConns.
+	noiseConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2)
+	plainConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2)
+	go func() {
+		err := noiseLoop(noiseConn, plainConn, privkey)
+		if err != nil {
+			fmt.Printf("noiseLoop: %v", err)
+		}
+	}()
+
+	ln, err := kcp.ServeConn(nil, 0, 0, plainConn)
 	if err != nil {
 		return fmt.Errorf("opening KCP listener: %v", err)
 	}
 	defer ln.Close()
 	go func() {
-		err := acceptSessions(ln, upstream, privkey)
+		err := acceptSessions(ln, upstream)
 		if err != nil {
 			log.Printf("acceptSessions: %v", err)
 		}
 	}()
 
 	handler := &Handler{
-		pconn: pconn,
+		pconn: noiseConn,
 	}
 
 	server := &http.Server{
