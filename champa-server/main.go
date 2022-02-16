@@ -348,7 +348,8 @@ func noiseLoop(noiseConn net.PacketConn, plainConn *turbotunnel.QueuePacketConn,
 			p := []byte{noise.MsgTypeHandshakeResp}
 			sess, p, err := noise.AcceptHandshake(p, msg, privkey)
 			if err != nil {
-				return err
+				log.Printf("AcceptHandshake: %v", err)
+				continue
 			}
 			_, err = noiseConn.WriteTo(p, addr)
 			if err != nil {
