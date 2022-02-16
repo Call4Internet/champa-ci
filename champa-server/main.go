@@ -423,7 +423,7 @@ func run(listen, upstream string, privkey []byte) error {
 	go func() {
 		err := noiseLoop(noiseConn, plainConn, privkey)
 		if err != nil {
-			fmt.Printf("noiseLoop: %v", err)
+			log.Printf("noiseLoop: %v", err)
 		}
 	}()
 
