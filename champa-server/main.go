@@ -414,6 +414,8 @@ func noiseLoop(noiseConn net.PacketConn, plainConn *turbotunnel.QueuePacketConn,
 }
 
 func run(listen, upstream string, privkey []byte) error {
+	done := make(chan error, 10)
+
 	// noiseConn is the packet interface that communicates with the AMP/HTTP
 	// Handler; it deals in encrypted Noise messages. plainConn is the
 	// packet interface that communicates with KCP. noiseLoop sits in the
@@ -421,11 +423,11 @@ func run(listen, upstream string, privkey []byte) error {
 	// encrypting/decrypting between the two net.PacketConns.
 	noiseConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2)
 	plainConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2)
+	defer noiseConn.Close()
+	defer plainConn.Close()
 	go func() {
 		err := noiseLoop(noiseConn, plainConn, privkey)
-		if err != nil {
-			log.Printf("noiseLoop: %v", err)
-		}
+		done <- fmt.Errorf("noiseLoop: %w", err)
 	}()
 
 	ln, err := kcp.ServeConn(nil, 0, 0, plainConn)
@@ -435,15 +437,12 @@ func run(listen, upstream string, privkey []byte) error {
 	defer ln.Close()
 	go func() {
 		err := acceptSessions(ln, upstream)
-		if err != nil {
-			log.Printf("acceptSessions: %v", err)
-		}
+		done <- fmt.Errorf("acceptSessions: %w", err)
 	}()
 
 	handler := &Handler{
 		pconn: noiseConn,
 	}
-
 	server := &http.Server{
 		Addr:         listen,
 		Handler:      handler,
@@ -453,8 +452,14 @@ func run(listen, upstream string, privkey []byte) error {
 		// The default MaxHeaderBytes is plenty for our purposes.
 	}
 	defer server.Close()
+	go func() {
+		err := server.ListenAndServe()
+		done <- fmt.Errorf("ListenAndServe: %w", err)
+	}()
 
-	return server.ListenAndServe()
+	// The goroutines are expected to run forever. Return the first error
+	// from any of them.
+	return <-done
 }
 
 func main() {
