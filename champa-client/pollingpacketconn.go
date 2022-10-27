@@ -39,6 +39,8 @@ const (
 type PollingPacketConn struct {
 	remoteAddr net.Addr
 	clientID   turbotunnel.ClientID
+	ctx        context.Context
+	cancel     context.CancelFunc
 	// QueuePacketConn is the direct receiver of ReadFrom and WriteTo calls.
 	// sendLoop, via send, removes messages from the outgoing queue that
 	// were placed there by WriteTo, and inserts messages into the incoming
@@ -50,9 +52,12 @@ type PollFunc func(context.Context, []byte) (io.ReadCloser, error)
 
 func NewPollingPacketConn(remoteAddr net.Addr, poll PollFunc) *PollingPacketConn {
 	clientID := turbotunnel.NewClientID()
+	ctx, cancel := context.WithCancel(context.Background())
 	c := &PollingPacketConn{
 		remoteAddr:      remoteAddr,
 		clientID:        clientID,
+		ctx:             ctx,
+		cancel:          cancel,
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),
 	}
 	go func() {
@@ -62,6 +67,13 @@ func NewPollingPacketConn(remoteAddr net.Addr, poll PollFunc) *PollingPacketConn
 		}
 	}()
 	return c
+}
+
+// Close cancels any in-progress polls and closes the underlying
+// QueuePacketConn.
+func (c *PollingPacketConn) Close() error {
+	c.cancel()
+	return c.QueuePacketConn.Close()
 }
 
 func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
@@ -139,7 +151,7 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 		}
 
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+			ctx, cancel := context.WithTimeout(c.ctx, pollTimeout)
 			defer cancel()
 			body, err := poll(ctx, payload.Bytes())
 			if err != nil {
