@@ -95,13 +95,19 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 		// taking a packet from the stash, then taking one from the
 		// outgoing queue, then finally also consider polls.
 		select {
+		case <-c.ctx.Done():
+			return nil
 		case p = <-unstash:
 		default:
 			select {
+			case <-c.ctx.Done():
+				return nil
 			case p = <-unstash:
 			case p = <-outgoing:
 			default:
 				select {
+				case <-c.ctx.Done():
+					return nil
 				case p = <-unstash:
 				case p = <-outgoing:
 				case <-pollTimer.C:

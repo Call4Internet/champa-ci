@@ -46,3 +46,37 @@ func TestCloseCancelsPoll(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestCloseHaltsPollLoop tests that pollLoop terminates and stops calling its
+// poll function after Close is called.
+func TestCloseHaltsPollLoop(t *testing.T) {
+	closedCh := make(chan struct{})
+	resultCh := make(chan error)
+	// The poll function returns immediately with a nil error as long as
+	// closedCh is not closed. When closedCh is closed, poll returns
+	// immediately with a non-nil error.
+	var poll PollFunc = func(ctx context.Context, _ []byte) (io.ReadCloser, error) {
+		select {
+		case <-closedCh:
+			resultCh <- errors.New("poll called after close")
+		default:
+		}
+		return ioutil.NopCloser(bytes.NewReader(nil)), nil
+	}
+	pconn := NewPollingPacketConn(turbotunnel.DummyAddr{}, poll)
+	// Close the connection.
+	err := pconn.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Tell the poll function to return an error if it is called after this
+	// point.
+	close(closedCh)
+	// Wait a few seconds to see if the poll function is called after the
+	// conn is closed.
+	select {
+	case err := <-resultCh:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+	}
+}
