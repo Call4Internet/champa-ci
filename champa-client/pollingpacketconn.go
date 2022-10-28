@@ -42,9 +42,9 @@ type PollingPacketConn struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	// QueuePacketConn is the direct receiver of ReadFrom and WriteTo calls.
-	// sendLoop, via send, removes messages from the outgoing queue that
-	// were placed there by WriteTo, and inserts messages into the incoming
-	// queue to be returned from ReadFrom.
+	// sendLoop removes messages from the outgoing queue that were placed
+	// there by WriteTo, and inserts messages into the incoming queue to be
+	// returned from ReadFrom.
 	*turbotunnel.QueuePacketConn
 }
 
