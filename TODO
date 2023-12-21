@@ -2,6 +2,8 @@ Man page.
 
 Protocol documentation.
 
+uTLS support.
+
 Use a more precise URL length bound in PollingPacketConn, found by
 binary search on encoded URLs. Use SetMtu so that several maximum-size
 packets fit comfortably in the maximum size.
