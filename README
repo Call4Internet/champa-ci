@@ -167,7 +167,7 @@ tunnel-client$ go build
 Copy the server's public key (server.pub) to the client. You don't need
 the private key (server.key) on the client.
 
-Run champa-server.
+Run champa-client.
 ```
 tunnel-client$ ./champa-client -pubkey-file server.pub -cache https://cdn.ampproject.org/ -front www.google.com https://example.com/champa/ 127.0.0.1:7000
 ```
