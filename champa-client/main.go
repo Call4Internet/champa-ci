@@ -151,7 +151,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	return err
 }
 
-func run(serverURL, cacheURL *url.URL, front, localAddr string, pubkey []byte) error {
+func run(rt http.RoundTripper, serverURL, cacheURL *url.URL, front, localAddr string, pubkey []byte) error {
 	ln, err := net.Listen("tcp", localAddr)
 	if err != nil {
 		return err
@@ -161,7 +161,7 @@ func run(serverURL, cacheURL *url.URL, front, localAddr string, pubkey []byte) e
 	http.DefaultTransport.(*http.Transport).MaxConnsPerHost = 20
 
 	var poll PollFunc = func(ctx context.Context, p []byte) (io.ReadCloser, error) {
-		return exchangeAMP(ctx, serverURL, cacheURL, front, p)
+		return exchangeAMP(ctx, rt, serverURL, cacheURL, front, p)
 	}
 	pconn := NewPollingPacketConn(turbotunnel.DummyAddr{}, poll)
 	defer pconn.Close()
@@ -300,7 +300,7 @@ Example:
 		os.Exit(1)
 	}
 
-	err = run(serverURL, cacheURL, front, localAddr, pubkey)
+	err = run(http.DefaultTransport, serverURL, cacheURL, front, localAddr, pubkey)
 	if err != nil {
 		log.Fatal(err)
 	}
