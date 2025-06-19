@@ -32,14 +32,12 @@ jobs:
         run: |
           mkdir -p build
           cd champa-client
-          export GOOS=${{ matrix.goos }}
-          export GOARCH=${{ matrix.goarch }}
-          export EXT=""
-          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
-          export OUTPUT="../build/champa-client-${GOOS}-${GOARCH}${EXT}"
-          go build -o "$OUTPUT" .
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          OUTFILE="champa-client-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o "../build/${OUTFILE}" .
           cd ../build
-          sha256sum "champa-client-${GOOS}-${GOARCH}${EXT}" >> SHA256SUMS.txt
+          sha256sum "${OUTFILE}" >> SHA256SUMS.txt
 
       - name: Upload GitHub Release assets
         uses: softprops/action-gh-release@v2
