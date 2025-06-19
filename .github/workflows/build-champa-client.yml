@@ -1,0 +1,48 @@
+name: Build Champa Client
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build champa-client
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: darwin
+            goarch: arm64
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build champa-client for ${{ matrix.goos }} / ${{ matrix.goarch }}
+        run: |
+          cd champa-client
+          export GOOS=${{ matrix.goos }}
+          export GOARCH=${{ matrix.goarch }}
+          export OUTPUT="champa-client-${GOOS}-${GOARCH}"
+          if [ "${GOOS}" = "windows" ]; then
+            OUTPUT="${OUTPUT}.exe"
+          fi
+          go build -o ../build/${OUTPUT} .
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: champa-client-binaries
+          path: build/
