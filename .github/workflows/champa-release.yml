@@ -31,10 +31,10 @@ jobs:
       - name: Build champa-client for ${{ matrix.goos }} / ${{ matrix.goarch }}
         run: |
           mkdir -p build
-          cd champa-client
           EXT=""
           if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
           OUTFILE="champa-client-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
+          cd champa-client
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o "../build/${OUTFILE}" .
           cd ../build
           sha256sum "${OUTFILE}" >> SHA256SUMS.txt
