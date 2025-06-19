@@ -28,24 +28,20 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Build champa-client for ${{ matrix.goos }}/${{ matrix.goarch }}
+      - name: Build champa-client for ${{ matrix.goos }} / ${{ matrix.goarch }}
         run: |
           mkdir -p build
-          EXT=""
-          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
-          OUTFILE="champa-client-${{ matrix.goos }}-${{ matrix.goarch }}$EXT"
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o "build/$OUTFILE" .
-          echo "$OUTFILE" >> build/artifacts.txt
+          cd champa-client
+          export GOOS=${{ matrix.goos }}
+          export GOARCH=${{ matrix.goarch }}
+          export EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          export OUTPUT="../build/champa-client-${GOOS}-${GOARCH}${EXT}"
+          go build -o "$OUTPUT" .
+          cd ../build
+          sha256sum "champa-client-${GOOS}-${GOARCH}${EXT}" >> SHA256SUMS.txt
 
-      - name: Calculate SHA256 checksums
-        if: ${{ matrix.goos == 'linux' && matrix.goarch == 'amd64' }}  # Only run once
-        run: |
-          cd build
-          for f in champa-client-*; do
-            sha256sum "$f"
-          done > SHA256SUMS.txt
-
-      - name: Upload binaries
+      - name: Upload GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
