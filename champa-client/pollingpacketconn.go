@@ -32,6 +32,12 @@ const (
 	// Rate limits on requests to the AMP cache.
 	requestsPerSecondMax   = 5.0
 	requestsPerSecondBurst = requestsPerSecondMax * 2
+	// How quickly the limit on requests per second grows linearly per
+	// second.
+	requestsPerSecondRateOfIncrease = 1.0 / 10.0
+	// How much the rate limit decreases when a response contains an
+	// unexpected error.
+	requestsPerSecondMultiplicativeDecrease = 0.5
 )
 
 // PollingPacketConn implements the net.PacketConn interface over an abstract
@@ -85,7 +91,12 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 	// overhead.
 	const maxPayloadLength = 2048
 
-	rateLimit := NewRateLimiter(time.Now(), requestsPerSecondMax, requestsPerSecondBurst)
+	rateLimit := NewRateLimiter(
+		time.Now(),
+		requestsPerSecondMax,
+		requestsPerSecondBurst,
+		requestsPerSecondRateOfIncrease,
+	)
 
 	pollDelay := initPollDelay
 	pollTimer := time.NewTimer(pollDelay)
@@ -181,8 +192,8 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 				defer cancel()
 				body, err := poll(ctx, payload.Bytes())
 				if err != nil {
-					log.Printf("poll: %v", err)
-					// TODO: perhaps self-throttle when this happens.
+					log.Printf("poll error, reducing request rate from %.3f/s: %v", rateLimit.rate, err)
+					rateLimit.MultiplicativeDecrease(now, requestsPerSecondMultiplicativeDecrease)
 					return
 				}
 				defer body.Close()
