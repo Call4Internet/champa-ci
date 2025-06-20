@@ -92,7 +92,15 @@ func (c *noisePacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		return 0, nil, err
 	}
 	dec, err := c.sess.Decrypt(nil, msg)
-	if err != nil {
+	if errors.Is(err, noise.ErrInvalidNonce) {
+		// This error indicates a properly authenticated ciphertext with
+		// a already used or out-of-window nonce. This can happen in
+		// benign situations, such as if a certain request is
+		// sufficiently delayed. Just log the error, don't tear down the
+		// connection.
+		log.Printf("%v", err)
+		return 0, addr, nil
+	} else if err != nil {
 		return 0, nil, err
 	}
 	return copy(p, dec), addr, nil
@@ -151,17 +159,17 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	return err
 }
 
-func run(serverURL, cacheURL *url.URL, front, localAddr string, pubkey []byte) error {
+func run(rt http.RoundTripper, serverURL, cacheURL *url.URL, front, localAddr string, pubkey []byte) error {
 	ln, err := net.Listen("tcp", localAddr)
 	if err != nil {
 		return err
 	}
 	defer ln.Close()
 
-	http.DefaultTransport.(*http.Transport).MaxConnsPerHost = 20
+	http.DefaultTransport.(*http.Transport).MaxConnsPerHost = 2
 
 	var poll PollFunc = func(ctx context.Context, p []byte) (io.ReadCloser, error) {
-		return exchangeAMP(ctx, serverURL, cacheURL, front, p)
+		return exchangeAMP(ctx, rt, serverURL, cacheURL, front, p)
 	}
 	pconn := NewPollingPacketConn(turbotunnel.DummyAddr{}, poll)
 	defer pconn.Close()
@@ -300,7 +308,7 @@ Example:
 		os.Exit(1)
 	}
 
-	err = run(serverURL, cacheURL, front, localAddr, pubkey)
+	err = run(http.DefaultTransport, serverURL, cacheURL, front, localAddr, pubkey)
 	if err != nil {
 		log.Fatal(err)
 	}

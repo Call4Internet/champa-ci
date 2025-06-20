@@ -26,7 +26,7 @@ func cacheBreaker() []byte {
 	return buf
 }
 
-func exchangeAMP(ctx context.Context, serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadCloser, error) {
+func exchangeAMP(ctx context.Context, rt http.RoundTripper, serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadCloser, error) {
 	// Append a cache buster and the encoded p to the path of serverURL.
 	u := serverURL.ResolveReference(&url.URL{
 		// Use strings.Join, rather than path.Join, in order to retain a
@@ -47,11 +47,10 @@ func exchangeAMP(ctx context.Context, serverURL, cacheURL *url.URL, front string
 		}
 	}
 
-	req, err := http.NewRequest("GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
-	req = req.WithContext(ctx)
 
 	// Do domain fronting, if requested.
 	if front != "" {
@@ -65,7 +64,7 @@ func exchangeAMP(ctx context.Context, serverURL, cacheURL *url.URL, front string
 
 	req.Header.Set("User-Agent", "") // Disable default "Go-http-client/1.1".
 
-	resp, err := http.DefaultTransport.RoundTrip(req)
+	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
