@@ -25,7 +25,10 @@ func NewRateLimiter(now time.Time, rate, max float64) RateLimiter {
 
 // replenish refills the bucket for the amount of time that has passed since the
 // last update at the current rate, up to max.
-func (rl *RateLimiter) replenish(now time.Time) {
+func (rl *RateLimiter) update(now time.Time) {
+	if now.Before(rl.lastUpdate) {
+		return
+	}
 	rl.cur = rl.cur + rl.rate*now.Sub(rl.lastUpdate).Seconds()
 	if rl.cur > rl.max {
 		rl.cur = rl.max
