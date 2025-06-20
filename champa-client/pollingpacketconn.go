@@ -84,9 +84,6 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 	pollDelay := initPollDelay
 	pollTimer := time.NewTimer(pollDelay)
 	for {
-		var payload bytes.Buffer
-		payload.Write(c.clientID[:])
-
 		var p []byte
 		unstash := c.QueuePacketConn.Unstash(c.remoteAddr)
 		outgoing := c.QueuePacketConn.OutgoingQueue(c.remoteAddr)
@@ -132,6 +129,9 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 			pollDelay = initPollDelay
 		}
 		pollTimer.Reset(pollDelay)
+
+		var payload bytes.Buffer
+		payload.Write(c.clientID[:])
 
 		// Grab as many more packets as are immediately available and
 		// fit in maxPayloadLength. Always include the first packet,
