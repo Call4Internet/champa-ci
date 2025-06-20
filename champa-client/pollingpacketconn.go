@@ -90,23 +90,6 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 	pollDelay := initPollDelay
 	pollTimer := time.NewTimer(pollDelay)
 	for {
-		now := time.Now()
-		if limited, duration := rateLimit.IsLimited(now); limited {
-			t := time.NewTimer(duration)
-			select {
-			case <-c.ctx.Done():
-				return nil
-			default:
-				select {
-				case <-c.ctx.Done():
-					return nil
-				case <-t.C:
-				}
-			}
-		}
-		// Deplete the rate limiter by 1 unit.
-		rateLimit.Take(now, 1.0)
-
 		var p []byte
 		unstash := c.QueuePacketConn.Unstash(c.remoteAddr)
 		outgoing := c.QueuePacketConn.OutgoingQueue(c.remoteAddr)
@@ -184,21 +167,31 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 			c.QueuePacketConn.Stash(p, c.remoteAddr)
 		}
 
-		go func() {
-			ctx, cancel := context.WithTimeout(c.ctx, pollTimeout)
-			defer cancel()
-			body, err := poll(ctx, payload.Bytes())
-			if err != nil {
-				log.Printf("poll: %v", err)
-				// TODO: perhaps self-throttle when this happens.
-				return
-			}
-			defer body.Close()
-			err = c.processIncoming(body)
-			if err != nil {
-				log.Printf("processIncoming: %v", err)
-			}
-		}()
+		now := time.Now()
+		if limited, _ := rateLimit.IsLimited(now); limited {
+			// Drop packets while rate limited. We drop packets,
+			// rather than indefinitely delay them, to prevent
+			// excessive buffering of old packets.
+		} else {
+			// Deplete the rate limiter by 1 unit.
+			rateLimit.Take(now, 1.0)
+
+			go func() {
+				ctx, cancel := context.WithTimeout(c.ctx, pollTimeout)
+				defer cancel()
+				body, err := poll(ctx, payload.Bytes())
+				if err != nil {
+					log.Printf("poll: %v", err)
+					// TODO: perhaps self-throttle when this happens.
+					return
+				}
+				defer body.Close()
+				err = c.processIncoming(body)
+				if err != nil {
+					log.Printf("processIncoming: %v", err)
+				}
+			}()
+		}
 	}
 }
 
