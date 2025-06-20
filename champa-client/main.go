@@ -166,7 +166,7 @@ func run(rt http.RoundTripper, serverURL, cacheURL *url.URL, front, localAddr st
 	}
 	defer ln.Close()
 
-	http.DefaultTransport.(*http.Transport).MaxConnsPerHost = 20
+	http.DefaultTransport.(*http.Transport).MaxConnsPerHost = 2
 
 	var poll PollFunc = func(ctx context.Context, p []byte) (io.ReadCloser, error) {
 		return exchangeAMP(ctx, rt, serverURL, cacheURL, front, p)
