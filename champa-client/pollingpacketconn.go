@@ -28,6 +28,10 @@ const (
 	// How long we wait for a start-to-finish request–response exchange,
 	// including reading the response body.
 	pollTimeout = 30 * time.Second
+
+	// Rate limits on requests to the AMP cache.
+	requestsPerSecondMax   = 5.0
+	requestsPerSecondBurst = requestsPerSecondMax * 2
 )
 
 // PollingPacketConn implements the net.PacketConn interface over an abstract
@@ -81,9 +85,28 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 	// overhead.
 	const maxPayloadLength = 5000
 
+	rateLimit := NewRateLimiter(time.Now(), requestsPerSecondMax, requestsPerSecondBurst)
+
 	pollDelay := initPollDelay
 	pollTimer := time.NewTimer(pollDelay)
 	for {
+		now := time.Now()
+		if limited, duration := rateLimit.IsLimited(now); limited {
+			t := time.NewTimer(duration)
+			select {
+			case <-c.ctx.Done():
+				return nil
+			default:
+				select {
+				case <-c.ctx.Done():
+					return nil
+				case <-t.C:
+				}
+			}
+		}
+		// Deplete the rate limiter by 1 unit.
+		rateLimit.Take(now, 1.0)
+
 		var p []byte
 		unstash := c.QueuePacketConn.Unstash(c.remoteAddr)
 		outgoing := c.QueuePacketConn.OutgoingQueue(c.remoteAddr)
