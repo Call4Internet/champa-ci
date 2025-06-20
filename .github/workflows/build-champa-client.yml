@@ -2,9 +2,10 @@ name: Build Champa Client
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
+    tags: [ 'v*' ] 
   pull_request:
-    branches: [ main ]
+    branches: [ master ]
   workflow_dispatch:
 
 jobs:
@@ -46,3 +47,27 @@ jobs:
         with:
           name: champa-client-${{ matrix.goos }}-${{ matrix.goarch }}
           path: build/
+
+  release:
+    name: Release binaries
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')  # Only run on tag pushes like v1.0.0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: List downloaded artifacts (debug)
+        run: ls -R ./artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ./artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
