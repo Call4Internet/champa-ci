@@ -83,7 +83,7 @@ func (c *PollingPacketConn) Close() error {
 func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 	// TODO: compute this dynamically, considering URL length and encoding
 	// overhead.
-	const maxPayloadLength = 5000
+	const maxPayloadLength = 2048
 
 	rateLimit := NewRateLimiter(time.Now(), requestsPerSecondMax, requestsPerSecondBurst)
 
