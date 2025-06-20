@@ -34,7 +34,7 @@ import (
 
 var errPayload = errors.New("unexpected payload in handshake message")
 var errMissingNonce = errors.New("slice is too short to contain a nonce")
-var errInvalidNonce = errors.New("nonce is already used or out of window")
+var ErrInvalidNonce = errors.New("nonce is already used or out of window")
 
 // PreSession represents a partially initialized Session, from the point of view
 // of an initiator that has sent its handshake message but has not yet received
@@ -165,7 +165,7 @@ func (session *Session) Decrypt(out, msg []byte) ([]byte, error) {
 	// recent window and not a replay)? It is important to do this check
 	// only after successful decryption+authentication.
 	if !session.replay.CheckAndUpdate(nonce) {
-		return nil, errInvalidNonce
+		return nil, ErrInvalidNonce
 	}
 
 	return p, nil

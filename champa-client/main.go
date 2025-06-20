@@ -92,7 +92,15 @@ func (c *noisePacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		return 0, nil, err
 	}
 	dec, err := c.sess.Decrypt(nil, msg)
-	if err != nil {
+	if errors.Is(err, noise.ErrInvalidNonce) {
+		// This error indicates a properly authenticated ciphertext with
+		// a already used or out-of-window nonce. This can happen in
+		// benign situations, such as if a certain request is
+		// sufficiently delayed. Just log the error, don't tear down the
+		// connection.
+		log.Printf("%v", err)
+		return 0, addr, nil
+	} else if err != nil {
 		return 0, nil, err
 	}
 	return copy(p, dec), addr, nil
