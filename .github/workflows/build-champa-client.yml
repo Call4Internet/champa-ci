@@ -1,4 +1,4 @@
-name: Build Champa Client
+name: Build and Release Champa Client
 
 on:
   push:
@@ -33,41 +33,57 @@ jobs:
 
       - name: Build champa-client for ${{ matrix.goos }} / ${{ matrix.goarch }}
         run: |
+          mkdir -p build/
           cd champa-client
           export GOOS=${{ matrix.goos }}
           export GOARCH=${{ matrix.goarch }}
-          export OUTPUT="champa-client-${GOOS}-${GOARCH}"
+          export OUTPUT="../build/champa-client-${GOOS}-${GOARCH}"
           if [ "${GOOS}" = "windows" ]; then
             OUTPUT="${OUTPUT}.exe"
           fi
-          go build -o ../build/${OUTPUT} .
+          go build -o "${OUTPUT}" .
 
-      - name: Upload binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: champa-client-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: build/
+      - name: Upload binaries (debug only)
+        run: ls -lh build/
 
   release:
-    name: Release binaries
+    name: Create GitHub Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')  # Only run on tag pushes like v1.0.0
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          path: ./artifacts
+          go-version: '1.22'
 
-      - name: List downloaded artifacts (debug)
-        run: ls -R ./artifacts
+      - name: Rebuild all binaries for release
+        run: |
+          mkdir -p build/
+          cd champa-client
+          for GOOS in linux windows darwin; do
+            for GOARCH in amd64 arm64; do
+              if [ "$GOOS" = "darwin" ] && [ "$GOARCH" = "arm64" ]; then continue; fi
+              export GOOS=$GOOS
+              export GOARCH=$GOARCH
+              OUTPUT="../build/champa-client-${GOOS}-${GOARCH}"
+              if [ "$GOOS" = "windows" ]; then
+                OUTPUT="${OUTPUT}.exe"
+              fi
+              go build -o "$OUTPUT" .
+            done
+          done
 
-      - name: Create GitHub Release
+      - name: List binaries (debug)
+        run: ls -lh build/
+
+      - name: Create GitHub Release and Upload Binaries
         uses: softprops/action-gh-release@v1
         with:
-          files: ./artifacts/**/*
+          files: build/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
