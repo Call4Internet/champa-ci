@@ -94,21 +94,26 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 		select {
 		case <-c.ctx.Done():
 			return nil
-		case p = <-unstash:
 		default:
 			select {
 			case <-c.ctx.Done():
 				return nil
 			case p = <-unstash:
-			case p = <-outgoing:
 			default:
 				select {
 				case <-c.ctx.Done():
 					return nil
 				case p = <-unstash:
 				case p = <-outgoing:
-				case <-pollTimer.C:
-					pollTimerExpired = true
+				default:
+					select {
+					case <-c.ctx.Done():
+						return nil
+					case p = <-unstash:
+					case p = <-outgoing:
+					case <-pollTimer.C:
+						pollTimerExpired = true
+					}
 				}
 			}
 		}
