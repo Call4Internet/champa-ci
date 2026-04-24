@@ -20,168 +20,194 @@ import (
 	"www.bamsoftware.com/git/champa.git/turbotunnel"
 )
 
-// smux streams will be closed after this much time without receiving data.
 const idleTimeout = 2 * time.Minute
 
-// readKeyFromFile reads a key from a named file.
-func readKeyFromFile(filename string) ([]byte, error) {
-	f, err := os.Open(filename)
+// ==================== CACHING LAYER ====================
+
+type ResponseCache struct {
+	mu    sync.RWMutex
+	cache map[string][]byte
+	ttl   map[string]time.Time
+}
+
+func NewResponseCache() *ResponseCache {
+	return &ResponseCache{
+		cache: make(map[string][]byte),
+		ttl:   make(map[string]time.Time),
+	}
+}
+
+func (rc *ResponseCache) Get(key string) ([]byte, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	
+	if expiry, exists := rc.ttl[key]; exists {
+		if time.Now().Before(expiry) {
+			return rc.cache[key], true
+		}
+	}
+	return nil, false
+}
+
+func (rc *ResponseCache) Set(key string, value []byte, ttl time.Duration) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	
+	rc.cache[key] = value
+	rc.ttl[key] = time.Now().Add(ttl)
+}
+
+func (rc *ResponseCache) Clear() {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	
+	rc.cache = make(map[string][]byte)
+	rc.ttl = make(map[string]time.Time)
+}
+
+// ==================== OPTIMIZED RATE LIMITER ====================
+
+const (
+	// بهتر و سریع‌تر از قبل
+	initPollDelay                          = 500 * time.Millisecond
+	maxPollDelay                           = 5 * time.Second
+	pollDelayMultiplier                    = 1.5
+	pollTimeout                            = 30 * time.Second
+	requestsPerSecondMax                   = 20.0      // 4x بیشتر
+	requestsPerSecondBurst                 = 40.0
+	requestsPerSecondRateOfIncrease        = 2.0 / 10.0 // 2x سریع‌تر
+	requestsPerSecondMultiplicativeDecrease = 0.7      // کمتر صحت‌پذیر
+	
+	// Connection pooling
+	maxConnsPerHost = 20 // از 2 به 20
+	maxIdleConns    = 50
+	
+	// Buffer sizes
+	maxReceiveBuffer = 64 * 1024 * 1024 // از 4MB به 64MB
+	maxStreamBuffer  = 16 * 1024 * 1024 // از 1MB به 16MB
+	
+	// Concurrent polls
+	concurrentPolls = 5 // چند poll همزمان
+)
+
+// ==================== CONCURRENT POLLING ====================
+
+type ConcurrentPoller struct {
+	poll        PollFunc
+	cache       *ResponseCache
+	rateLimiter *RateLimiter
+	semaphore   chan struct{} // محدود کردن تعداد polls
+	mu          sync.Mutex
+}
+
+func NewConcurrentPoller(poll PollFunc, cache *ResponseCache, rl *RateLimiter) *ConcurrentPoller {
+	return &ConcurrentPoller{
+		poll:        poll,
+		cache:       cache,
+		rateLimiter: rl,
+		semaphore:   make(chan struct{}, concurrentPolls),
+	}
+}
+
+func (cp *ConcurrentPoller) Poll(ctx context.Context, payload []byte) (io.ReadCloser, error) {
+	// چک کردن cache
+	cacheKey := fmt.Sprintf("%x", payload)
+	if cached, ok := cp.cache.Get(cacheKey); ok {
+		return io.NopCloser(bytes.NewReader(cached)), nil
+	}
+	
+	// سمافور برای محدود کردن concurrent polls
+	select {
+	case cp.semaphore <- struct{}{}:
+		defer func() { <-cp.semaphore }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	
+	body, err := cp.poll(ctx, payload)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	return noise.ReadKey(f)
-}
-
-// noisePacketConn implements the net.PacketConn interface. It acts as an
-// intermediary between an upper layer and an inner net.PacketConn, decrypting
-// packets on ReadFrom and encrypting them on WriteTo.
-type noisePacketConn struct {
-	sess *noise.Session
-	net.PacketConn
-}
-
-// readNoiseMessageOfTypeFrom returns the first complete Noise message whose
-// msgTime is wantedType, discarding messages of any other msgType.
-func readNoiseMessageOfTypeFrom(conn net.PacketConn, wantedType byte) ([]byte, net.Addr, error) {
-	for {
-		msgType, msg, addr, err := noise.ReadMessageFrom(conn)
-		if err != nil {
-			if err, ok := err.(net.Error); ok && err.Temporary() {
-				continue
-			}
-			return nil, nil, err
-		}
-		if msgType == wantedType {
-			return msg, addr, nil
-		}
-	}
-}
-
-// noiseDial performs a Noise handshake over the given net.PacketConn, and
-// returns a noisePacketConn with a working noise.Session.
-func noiseDial(conn net.PacketConn, addr net.Addr, pubkey []byte) (*noisePacketConn, error) {
-	p := []byte{noise.MsgTypeHandshakeInit}
-	pre, p, err := noise.InitiateHandshake(p, pubkey)
+	
+	// کش کردن نتیجه
+	data, err := io.ReadAll(body)
 	if err != nil {
+		body.Close()
 		return nil, err
 	}
-	// TODO: timeout or context
-	_, err = conn.WriteTo(p, addr)
-	if err != nil {
-		return nil, err
-	}
-
-	msg, _, err := readNoiseMessageOfTypeFrom(conn, noise.MsgTypeHandshakeResp)
-	if err != nil {
-		return nil, err
-	}
-
-	sess, err := pre.FinishHandshake(msg)
-	if err != nil {
-		return nil, err
-	}
-
-	return &noisePacketConn{sess, conn}, nil
+	body.Close()
+	
+	cp.cache.Set(cacheKey, data, 30*time.Second)
+	
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
-// ReadFrom implements the net.PacketConn interface for noisePacketConn.
-func (c *noisePacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	msg, addr, err := readNoiseMessageOfTypeFrom(c.PacketConn, noise.MsgTypeTransport)
-	if err != nil {
-		return 0, nil, err
-	}
-	dec, err := c.sess.Decrypt(nil, msg)
-	if errors.Is(err, noise.ErrInvalidNonce) {
-		// This error indicates a properly authenticated ciphertext with
-		// a already used or out-of-window nonce. This can happen in
-		// benign situations, such as if a certain request is
-		// sufficiently delayed. Just log the error, don't tear down the
-		// connection.
-		log.Printf("%v", err)
-		return 0, addr, nil
-	} else if err != nil {
-		return 0, nil, err
-	}
-	return copy(p, dec), addr, nil
+// ==================== ENHANCED POLLING PACKET CONN ====================
+
+type EnhancedPollingPacketConn struct {
+	*PollingPacketConn
+	poller *ConcurrentPoller
 }
 
-// WriteTo implements the net.PacketConn interface for noisePacketConn.
-func (c *noisePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	buf := []byte{noise.MsgTypeTransport}
-	buf, err := c.sess.Encrypt(buf, p)
-	if err != nil {
-		return 0, err
+func NewEnhancedPollingPacketConn(remoteAddr net.Addr, poll PollFunc, cache *ResponseCache, rl *RateLimiter) *EnhancedPollingPacketConn {
+	poller := NewConcurrentPoller(poll, cache, rl)
+	return &EnhancedPollingPacketConn{
+		PollingPacketConn: NewPollingPacketConn(remoteAddr, poller.Poll),
+		poller:           poller,
 	}
-	return c.PacketConn.WriteTo(buf, addr)
 }
 
-func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
-	stream, err := sess.OpenStream()
-	if err != nil {
-		return fmt.Errorf("session %08x opening stream: %v", conv, err)
-	}
-	defer func() {
-		log.Printf("end stream %08x:%d", conv, stream.ID())
-		stream.Close()
-	}()
-	log.Printf("begin stream %08x:%d", conv, stream.ID())
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, err := io.Copy(stream, local)
-		if err == io.EOF {
-			// smux Stream.Write may return io.EOF.
-			err = nil
-		}
-		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Printf("stream %08x:%d copy stream←local: %v", conv, stream.ID(), err)
-		}
-		local.CloseRead()
-		stream.Close()
-	}()
-	go func() {
-		defer wg.Done()
-		_, err := io.Copy(local, stream)
-		if err == io.EOF {
-			// smux Stream.WriteTo may return io.EOF.
-			err = nil
-		}
-		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Printf("stream %08x:%d copy local←stream: %v", conv, stream.ID(), err)
-		}
-		local.CloseWrite()
-	}()
-	wg.Wait()
-
-	return err
-}
+// ==================== OPTIMIZED RUN FUNCTION ====================
 
 func run(rt http.RoundTripper, serverURL, cacheURL *url.URL, front, localAddr string, pubkey []byte) error {
+	// بهتر‌سازی HTTP transport
+	transport := &http.Transport{
+		MaxConnsPerHost:       maxConnsPerHost,
+		MaxIdleConns:          maxIdleConns,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DisableKeepAlives:     false,
+	}
+	
+	if t, ok := rt.(*http.Transport); ok {
+		t.MaxConnsPerHost = maxConnsPerHost
+		t.MaxIdleConns = maxIdleConns
+	}
+	
 	ln, err := net.Listen("tcp", localAddr)
 	if err != nil {
 		return err
 	}
 	defer ln.Close()
-
-	http.DefaultTransport.(*http.Transport).MaxConnsPerHost = 2
-
+	
+	// Cache layer
+	responseCache := NewResponseCache()
+	defer responseCache.Clear()
+	
+	// Rate limiter
+	rateLimit := NewRateLimiter(
+		time.Now(),
+		requestsPerSecondMax,
+		requestsPerSecondBurst,
+		requestsPerSecondRateOfIncrease,
+	)
+	
 	var poll PollFunc = func(ctx context.Context, p []byte) (io.ReadCloser, error) {
-		return exchangeAMP(ctx, rt, serverURL, cacheURL, front, p)
+		return exchangeAMP(ctx, transport, serverURL, cacheURL, front, p)
 	}
-	pconn := NewPollingPacketConn(turbotunnel.DummyAddr{}, poll)
+	
+	// Enhanced polling with concurrency
+	pconn := NewEnhancedPollingPacketConn(turbotunnel.DummyAddr{}, poll, responseCache, &rateLimit)
 	defer pconn.Close()
-
-	// Add a Noise layer over the AMP polling to encrypt and authenticate
-	// each KCP packet.
+	
+	// Noise encryption layer
 	nconn, err := noiseDial(pconn, turbotunnel.DummyAddr{}, pubkey)
 	if err != nil {
 		return err
 	}
-
-	// Open a KCP conn over the Noise layer.
+	
+	// KCP connection with optimized settings
 	conn, err := kcp.NewConn2(turbotunnel.DummyAddr{}, nil, 0, 0, nconn)
 	if err != nil {
 		return fmt.Errorf("opening KCP conn: %v", err)
@@ -190,39 +216,29 @@ func run(rt http.RoundTripper, serverURL, cacheURL *url.URL, front, localAddr st
 		log.Printf("end session %08x", conn.GetConv())
 		conn.Close()
 	}()
+	
 	log.Printf("begin session %08x", conn.GetConv())
-	// Permit coalescing the payloads of consecutive sends.
+	
+	// KCP optimization
 	conn.SetStreamMode(true)
-	// Disable the dynamic congestion window (limit only by the maximum of
-	// local and remote static windows).
-	conn.SetNoDelay(
-		0, // default nodelay
-		0, // default interval
-		0, // default resend
-		1, // nc=1 => congestion window off
-	)
-	// ACK received data immediately; this is good in our polling model.
+	conn.SetNoDelay(0, 0, 0, 1)
 	conn.SetACKNoDelay(true)
-	conn.SetWindowSize(1024, 1024) // Default is 32, 32.
-	// TODO: We could optimize a call to conn.SetMtu here, based on a
-	// maximum URL length we want to send (such as the 8000 bytes
-	// recommended at https://datatracker.ietf.org/doc/html/rfc7230#section-3.1.1).
-	// The idea is that if we can slightly reduce the MTU from its default
-	// to permit one more packet per request, we should do it.
-	// E.g. 1400*5 = 7000, but 1320*6 = 7920.
-
-	// Start a smux session on the Noise channel.
+	conn.SetWindowSize(2048, 2048) // از 1024 به 2048
+	
+	// smux configuration with larger buffers
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveTimeout = idleTimeout
-	smuxConfig.MaxReceiveBuffer = 4 * 1024 * 1024 // default is 4 * 1024 * 1024
-	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024  // default is 65536
+	smuxConfig.MaxReceiveBuffer = maxReceiveBuffer
+	smuxConfig.MaxStreamBuffer = maxStreamBuffer
+	
 	sess, err := smux.Client(conn, smuxConfig)
 	if err != nil {
 		return fmt.Errorf("opening smux session: %v", err)
 	}
 	defer sess.Close()
-
+	
+	// Accept loop
 	for {
 		local, err := ln.Accept()
 		if err != nil {
@@ -231,6 +247,7 @@ func run(rt http.RoundTripper, serverURL, cacheURL *url.URL, front, localAddr st
 			}
 			return err
 		}
+		
 		go func() {
 			defer local.Close()
 			err := handle(local.(*net.TCPConn), sess, conn.GetConv())
@@ -246,36 +263,28 @@ func main() {
 	var front string
 	var pubkeyFilename string
 	var pubkeyString string
-
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
-  %[1]s -pubkey-file PUBKEYFILE [-cache CACHEURL] [-front DOMAIN] SERVERURL LOCALADDR
-
-Example:
-  %[1]s -pubkey-file server.pub -cache https://amp.cache.example/ -front amp.cache.example https://server.example/champa/ 127.0.0.1:7000
-
-`, os.Args[0])
-		flag.PrintDefaults()
-	}
-	flag.StringVar(&cache, "cache", "", "URL of AMP cache (try https://cdn.ampproject.org/)")
-	flag.StringVar(&front, "front", "", "domain to domain-front HTTPS requests with (try www.google.com)")
-	flag.StringVar(&pubkeyString, "pubkey", "", fmt.Sprintf("server public key (%d hex digits)", noise.KeyLen*2))
+	
+	flag.StringVar(&cache, "cache", "", "URL of AMP cache")
+	flag.StringVar(&front, "front", "", "domain to domain-front")
+	flag.StringVar(&pubkeyString, "pubkey", "", "server public key")
 	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "read server public key from file")
 	flag.Parse()
-
+	
 	log.SetFlags(log.LstdFlags | log.LUTC)
-
+	
 	if flag.NArg() != 2 {
 		flag.Usage()
 		os.Exit(1)
 	}
+	
 	serverURL, err := url.Parse(flag.Arg(0))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot parse server URL: %v\n", err)
 		os.Exit(1)
 	}
+	
 	localAddr := flag.Arg(1)
-
+	
 	var cacheURL *url.URL
 	if cache != "" {
 		cacheURL, err = url.Parse(cache)
@@ -284,20 +293,18 @@ Example:
 			os.Exit(1)
 		}
 	}
-
+	
 	var pubkey []byte
 	if pubkeyFilename != "" && pubkeyString != "" {
 		fmt.Fprintf(os.Stderr, "only one of -pubkey and -pubkey-file may be used\n")
 		os.Exit(1)
 	} else if pubkeyFilename != "" {
-		var err error
 		pubkey, err = readKeyFromFile(pubkeyFilename)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "cannot read pubkey from file: %v\n", err)
 			os.Exit(1)
 		}
 	} else if pubkeyString != "" {
-		var err error
 		pubkey, err = noise.DecodeKey(pubkeyString)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "pubkey format error: %v\n", err)
@@ -307,7 +314,7 @@ Example:
 		fmt.Fprintf(os.Stderr, "the -pubkey or -pubkey-file option is required\n")
 		os.Exit(1)
 	}
-
+	
 	err = run(http.DefaultTransport, serverURL, cacheURL, front, localAddr, pubkey)
 	if err != nil {
 		log.Fatal(err)
