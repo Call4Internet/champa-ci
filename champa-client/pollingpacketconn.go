@@ -14,47 +14,21 @@ import (
 )
 
 const (
-	// pollLoop has a poll timer that automatically sends an empty polling
-	// query when a certain amount of time has elapsed without a send. The
-	// poll timer is initially set to initPollDelay. It increases by a
-	// factor of pollDelayMultiplier every time the poll timer expires, up
-	// to a maximum of maxPollDelay. The poll timer is reset to
-	// initPollDelay whenever an a send occurs that is not the result of the
-	// poll timer expiring.
-	initPollDelay       = 1 * time.Second
-	maxPollDelay        = 10 * time.Second
-	pollDelayMultiplier = 2.0
-
-	// How long we wait for a start-to-finish request–response exchange,
-	// including reading the response body.
-	pollTimeout = 30 * time.Second
-
-	// Rate limits on requests to the AMP cache.
-	requestsPerSecondMax   = 5.0
-	requestsPerSecondBurst = requestsPerSecondMax * 2
-	// How quickly the limit on requests per second grows linearly per
-	// second.
-	requestsPerSecondRateOfIncrease = 1.0 / 10.0
-	// How much the rate limit decreases when a response contains an
-	// unexpected error.
-	requestsPerSecondMultiplicativeDecrease = 0.5
+	initPollDelay                          = 500 * time.Millisecond  // سریع‌تر
+	maxPollDelay                           = 5 * time.Second          // کوتاه‌تر
+	pollDelayMultiplier                    = 1.5                      // نرم‌تر
+	pollTimeout                            = 30 * time.Second
+	requestsPerSecondMax                   = 20.0                     // 4x بیشتر
+	requestsPerSecondBurst                 = 40.0
+	requestsPerSecondRateOfIncrease        = 2.0 / 10.0               // سریع‌تر
+	requestsPerSecondMultiplicativeDecrease = 0.7                     // نرم‌تر
 )
 
-// PollingPacketConn implements the net.PacketConn interface over an abstract
-// poll function. Packets addressed to remoteAddr are passed to WriteTo are
-// batched, encapsulated, and passed to the poll function. Packets addressed to
-// other remote addresses are ignored. The poll function returns its own batch
-// of incoming packets which are queued to be returned from a future call to
-// ReadFrom.
 type PollingPacketConn struct {
 	remoteAddr net.Addr
 	clientID   turbotunnel.ClientID
 	ctx        context.Context
 	cancel     context.CancelFunc
-	// QueuePacketConn is the direct receiver of ReadFrom and WriteTo calls.
-	// sendLoop removes messages from the outgoing queue that were placed
-	// there by WriteTo, and inserts messages into the incoming queue to be
-	// returned from ReadFrom.
 	*turbotunnel.QueuePacketConn
 }
 
@@ -79,16 +53,12 @@ func NewPollingPacketConn(remoteAddr net.Addr, poll PollFunc) *PollingPacketConn
 	return c
 }
 
-// Close cancels any in-progress polls and closes the underlying
-// QueuePacketConn.
 func (c *PollingPacketConn) Close() error {
 	c.cancel()
 	return c.QueuePacketConn.Close()
 }
 
 func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
-	// TODO: compute this dynamically, considering URL length and encoding
-	// overhead.
 	const maxPayloadLength = 2048
 
 	rateLimit := NewRateLimiter(
@@ -100,14 +70,19 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 
 	pollDelay := initPollDelay
 	pollTimer := time.NewTimer(pollDelay)
+	
+	defer func() {
+		if !pollTimer.Stop() {
+			<-pollTimer.C
+		}
+	}()
+	
 	for {
 		var p []byte
 		unstash := c.QueuePacketConn.Unstash(c.remoteAddr)
 		outgoing := c.QueuePacketConn.OutgoingQueue(c.remoteAddr)
 		pollTimerExpired := false
-		// Block, waiting for one packet or a demand to poll. Prioritize
-		// taking a packet from the stash, then taking one from the
-		// outgoing queue, then finally also consider polls.
+
 		select {
 		case <-c.ctx.Done():
 			return nil
@@ -136,15 +111,11 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 		}
 
 		if pollTimerExpired {
-			// We're polling because it's been a while since we last
-			// polled. Increase the poll delay.
 			pollDelay = time.Duration(float64(pollDelay) * pollDelayMultiplier)
 			if pollDelay > maxPollDelay {
 				pollDelay = maxPollDelay
 			}
 		} else {
-			// We're sending an actual data packet. Reset the poll
-			// delay to initial.
 			if !pollTimer.Stop() {
 				<-pollTimer.C
 			}
@@ -155,14 +126,9 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 		var payload bytes.Buffer
 		payload.Write(c.clientID[:])
 
-		// Grab as many more packets as are immediately available and
-		// fit in maxPayloadLength. Always include the first packet,
-		// even if it doesn't fit.
 		first := true
 		for len(p) > 0 && (first || payload.Len()+len(p) <= maxPayloadLength) {
 			first = false
-
-			// Encapsulate the packet into the payload.
 			encapsulation.WriteData(&payload, p)
 
 			select {
@@ -171,25 +137,21 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 				p = nil
 			}
 		}
+		
 		if len(p) > 0 {
-			// We read an actual packet, but it didn't fit under the
-			// limit. Stash it so that it will be first in line for
-			// the next poll.
 			c.QueuePacketConn.Stash(p, c.remoteAddr)
 		}
 
 		now := time.Now()
 		if limited, _ := rateLimit.IsLimited(now); limited {
-			// Drop packets while rate limited. We drop packets,
-			// rather than indefinitely delay them, to prevent
-			// excessive buffering of old packets.
+			// حذف بسته‌های قدیمی برای جلوگیری از buffering
 		} else {
-			// Deplete the rate limiter by 1 unit.
 			rateLimit.Take(now, 1.0)
 
 			go func() {
 				ctx, cancel := context.WithTimeout(c.ctx, pollTimeout)
 				defer cancel()
+				
 				body, err := poll(ctx, payload.Bytes())
 				if err != nil {
 					log.Printf("poll error, reducing request rate from %.3f/s: %v", rateLimit.rate, err)
@@ -197,6 +159,7 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 					return
 				}
 				defer body.Close()
+				
 				err = c.processIncoming(body)
 				if err != nil {
 					log.Printf("processIncoming: %v", err)
@@ -206,15 +169,7 @@ func (c *PollingPacketConn) pollLoop(poll PollFunc) error {
 	}
 }
 
-// processIncoming reads a packet from a poll response body and feeds it to the
-// incoming queue of c.QueuePacketConn.
-//
-// In main, we've done SetACKNoDelay on the *kcp.UDPSession. I expect this will
-// cause us, the client, to ACK incoming data immediately, which means that
-// whenever we receive ACKable data, we immediately do another poll (carrying an
-// ACK), which is what we want anyway while we're actively downloading.
 func (c *PollingPacketConn) processIncoming(body io.Reader) error {
-	// Safety limit on response body length.
 	lr := io.LimitReader(body, 500*1024)
 	for {
 		p, err := encapsulation.ReadData(lr)
