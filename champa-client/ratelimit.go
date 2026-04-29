@@ -4,14 +4,16 @@ import (
 	"time"
 )
 
-// RateLimiter is a leaky-bucket rate limiter.
+// RateLimiter is a token-bucket rate limiter with a linearly recovering rate.
 //
-// It allows up to `rate` operations per second, burst-capped at `max`.
-// The rate increases linearly at `rateRateOfIncrease` units per second,
-// modelling a connection that slowly recovers after congestion.
+// Invariant:
 //
-// Negative `cur` means the bucket is overdrawn (limited).
-// Zero or positive `cur` means operations are allowed.
+//	cur >= 0   operations are allowed
+//	cur <  0   rate-limited; IsLimited returns true
+//
+// The refill rate increases by rateRateOfIncrease tokens per second, modelling
+// a connection recovering from congestion (AIMD: slow linear increase, fast
+// multiplicative decrease).
 type RateLimiter struct {
 	rate               float64
 	max                float64
@@ -20,57 +22,59 @@ type RateLimiter struct {
 	lastUpdate         time.Time
 }
 
-// NewRateLimiter creates a new RateLimiter with the given parameters.
+// NewRateLimiter returns a RateLimiter seeded with cur=1 so the very first
+// operation is never gated.
 func NewRateLimiter(now time.Time, rate, max, rateRateOfIncrease float64) RateLimiter {
 	return RateLimiter{
 		rate:               rate,
 		max:                max,
 		rateRateOfIncrease: rateRateOfIncrease,
-		// Seed with a small positive value so the very first operation
-		// is not gated.
-		cur:        1.0,
-		lastUpdate: now,
+		cur:                1.0,
+		lastUpdate:         now,
 	}
 }
 
-// update refills the bucket for elapsed time at the current rate, up to max,
-// and increases the rate by rateRateOfIncrease per elapsed second.
+// update refills the bucket for elapsed time and increases the rate.
+// Must be called before every public method.
 func (rl *RateLimiter) update(now time.Time) {
 	if now.Before(rl.lastUpdate) {
 		return
 	}
 	elapsed := now.Sub(rl.lastUpdate).Seconds()
 	rl.lastUpdate = now
+
 	rl.cur += rl.rate * elapsed
 	if rl.cur > rl.max {
 		rl.cur = rl.max
 	}
+
 	rl.rate += rl.rateRateOfIncrease * elapsed
 	if rl.rate > rl.max {
-		// Never let the rate exceed the burst cap.
 		rl.rate = rl.max
 	}
 }
 
-// IsLimited returns whether the limiter is currently limiting, and a duration
-// estimate of how long until it will allow an operation.
+// IsLimited reports whether the limiter is currently throttling and returns an
+// estimate of how long until the next operation will be allowed.
 func (rl *RateLimiter) IsLimited(now time.Time) (bool, time.Duration) {
 	rl.update(now)
 	if rl.cur < 0.0 {
-		return true, time.Duration(-rl.cur / rl.rate * float64(time.Second))
+		wait := time.Duration(-rl.cur / rl.rate * float64(time.Second))
+		return true, wait
 	}
 	return false, 0
 }
 
-// Take removes `amount` capacity from the bucket.
-// If this drives cur below zero, subsequent calls to IsLimited will return true.
+// Take removes amount tokens from the bucket. A subsequent call to IsLimited
+// will return true until the bucket has refilled sufficiently.
 func (rl *RateLimiter) Take(now time.Time, amount float64) {
 	rl.update(now)
 	rl.cur -= amount
 }
 
-// MultiplicativeDecrease multiplies the current rate by factor (0 < factor < 1),
-// and resets the bucket to 0 so the next operation is not penalised twice.
+// MultiplicativeDecrease multiplies the current rate by factor (0 < factor < 1)
+// and resets cur to 0 so the caller is not penalised twice.
+// Used on poll errors to implement TCP-style congestion control.
 func (rl *RateLimiter) MultiplicativeDecrease(now time.Time, factor float64) {
 	rl.update(now)
 	rl.rate *= factor
@@ -80,13 +84,11 @@ func (rl *RateLimiter) MultiplicativeDecrease(now time.Time, factor float64) {
 	rl.cur = 0.0
 }
 
-// GetRate returns the current rate (operations per second).
-func (rl *RateLimiter) GetRate() float64 {
-	return rl.rate
-}
+// GetRate returns the current refill rate (operations per second).
+func (rl *RateLimiter) GetRate() float64 { return rl.rate }
 
-// SetRate sets the target rate to r (clamped to [adpMinRate, adpMaxRate]).
-// The bucket level is preserved so an increase in rate does not cause a burst.
+// SetRate sets the refill rate to r, clamped to [adpMinRate, adpMaxRate].
+// The bucket level is preserved to avoid an artificial burst on rate increase.
 func (rl *RateLimiter) SetRate(r float64) {
 	r = clampFloat(r, adpMinRate, adpMaxRate)
 	rl.rate = r

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,30 +17,42 @@ import (
 	"www.bamsoftware.com/git/champa.git/armor"
 )
 
-// cacheBreaker returns a random byte slice used to prevent AMP cache
-// from serving a cached (stale) response.
+// ErrCacheQuota is returned when the AMP cache signals quota exhaustion via
+// HTTP 302/301 or a "silent redirect" (200 + Location header).
+// Callers must back off; falling back to direct mode is NOT safe because the
+// origin server may be unreachable without domain fronting.
+var ErrCacheQuota = errors.New("AMP cache quota exceeded")
+
+// cacheBreaker returns 12 random bytes that are embedded in every request URL
+// to prevent the AMP cache from serving a stale cached response.
 func cacheBreaker() []byte {
-	buf := make([]byte, 12)
-	_, err := rand.Read(buf)
-	if err != nil {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
 		panic(err)
 	}
-	return buf
+	return b
 }
 
-func exchangeAMP(ctx context.Context, rt http.RoundTripper, serverURL, cacheURL *url.URL, front string, p []byte) (io.ReadCloser, error) {
-	// Build request URL: <serverURL>/<version+cacheBuster>/<base64-payload>
+// exchangeAMP encodes payload p into a URL, sends it to serverURL through
+// cacheURL (nil = direct, no AMP cache), and returns the decoded response body.
+//
+// front, when non-empty, replaces the TLS SNI and HTTP Host header so that the
+// connection appears to go to a different domain (domain fronting).
+func exchangeAMP(
+	ctx context.Context,
+	rt http.RoundTripper,
+	serverURL, cacheURL *url.URL,
+	front string,
+	p []byte,
+) (io.ReadCloser, error) {
+	// Build the request URL: /0<cache-breaker>/<payload-b64>
 	u := serverURL.ResolveReference(&url.URL{
-		// Use strings.Join (not path.Join) to retain a trailing slash when
-		// p is empty.
 		Path: strings.Join([]string{
-			// "0" is the client–server protocol version indicator.
 			"0" + base64.RawURLEncoding.EncodeToString(cacheBreaker()),
 			base64.RawURLEncoding.EncodeToString(p),
 		}, "/"),
 	})
 
-	// Route through an AMP cache if one was specified.
 	if cacheURL != nil {
 		var err error
 		u, err = amp.CacheURL(u, cacheURL, "c")
@@ -53,44 +66,40 @@ func exchangeAMP(ctx context.Context, rt http.RoundTripper, serverURL, cacheURL 
 		return nil, err
 	}
 
-	// Domain fronting: replace the Host header while keeping the URL path.
+	// Apply domain fronting: replace the Host/SNI while keeping the path.
 	if front != "" {
-		_, port, err := net.SplitHostPort(req.URL.Host)
-		if err == nil {
+		if _, port, err := net.SplitHostPort(req.URL.Host); err == nil {
 			req.URL.Host = net.JoinHostPort(front, port)
 		} else {
 			req.URL.Host = front
 		}
 	}
 
-	// Suppress the default Go user-agent so the AMP cache doesn't fingerprint
-	// us differently from a browser.
+	// Empty User-Agent avoids AMP cache classification.
 	req.Header.Set("User-Agent", "")
-	// NOTE: Do NOT set Accept-Encoding manually.
-	// Go's http.Transport only auto-decompresses when it adds the header
-	// itself. If we set it manually, we receive raw compressed bytes and
-	// the AMP armor decoder fails with EOF.
+	// Do NOT set Accept-Encoding. Go auto-decompresses only when it added the
+	// header itself; the armor layer handles its own encoding.
 
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
+
+	// 302 / 301 from the AMP cache means quota / rate-limit redirect.
+	if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusMovedPermanently {
+		resp.Body.Close()
+		return nil, fmt.Errorf("%w: %v", ErrCacheQuota, resp.Status)
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
 		return nil, fmt.Errorf("server returned status %v", resp.Status)
 	}
+
+	// "Silent redirect": status 200 with a Location header and a JS body.
 	if _, err := resp.Location(); err == nil {
-		// The Google AMP Cache can return a "silent redirect" (status 200
-		// + Location header + JS redirect in body).  We cannot extract
-		// data from this response; treat it as a poll error.
-		//
-		// Example response headers:
-		//   HTTP/2 200 OK
-		//   Cache-Control: private
-		//   Location: https://example.com/champa/...
-		//   X-Silent-Redirect: true
 		resp.Body.Close()
-		return nil, fmt.Errorf("server returned a Location header (silent redirect)")
+		return nil, fmt.Errorf("%w: silent redirect", ErrCacheQuota)
 	}
 
 	dec, err := armor.NewDecoder(bufio.NewReader(resp.Body))
@@ -99,13 +108,9 @@ func exchangeAMP(ctx context.Context, rt http.RoundTripper, serverURL, cacheURL 
 		return nil, err
 	}
 
-	// Return a ReadCloser that reads from the armor decoder (which reads
-	// from the response body) but closes the actual response body.
-	return &struct {
+	// Combine the armor decoder (Reader) with the HTTP body (Closer).
+	return struct {
 		io.Reader
 		io.Closer
-	}{
-		Reader: dec,
-		Closer: resp.Body,
-	}, nil
+	}{dec, resp.Body}, nil
 }
